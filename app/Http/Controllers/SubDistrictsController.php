@@ -2,12 +2,27 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Districts;
 use App\Models\SubDistricts;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class SubDistrictsController extends Controller
 {
+    private function applyNameThPrefix(SubDistricts $item): void
+    {
+        $name = $item->name_th ?? '';
+        if ($name === '') {
+            return;
+        }
+        if (preg_match('/^(แขวง|ต\.)/u', $name)) {
+            $item->name_th_prefix = $name;
+
+            return;
+        }
+        $provinceId = (int) Districts::where('id', $item->district_id)->value('province_id');
+        $item->name_th_prefix = ($provinceId === 1 ? 'แขวง' : 'ต.') . $name;
+    }
 
     public function index()
     {
@@ -38,6 +53,7 @@ class SubDistrictsController extends Controller
             $Item->name_th = $request->name_th;
             $Item->name_en = $request->name_en;
             $Item->zip_code = $request->zip_code;
+            $this->applyNameThPrefix($Item);
             $Item->save();
 
             DB::commit();
@@ -70,6 +86,7 @@ class SubDistrictsController extends Controller
             $item->name_th = $request->input('name_th');
             $item->name_en = $request->input('name_en');
             $item->zip_code = $request->input('zip_code');
+            $this->applyNameThPrefix($item);
             $item->save();
 
             DB::commit();
@@ -139,7 +156,7 @@ class SubDistrictsController extends Controller
             ['name_th',
             'name_en',
             'zip_code'];
-        $query = SubDistricts::select($columns);
+        $query = SubDistricts::select($columns)->with(['Districts.Provinces']);
 
         if (!empty($districtId)) {
             $query->where('district_id', $districtId);

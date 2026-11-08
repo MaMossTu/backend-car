@@ -10,6 +10,16 @@ use Illuminate\Support\Facades\Storage;
 
 class BranchesController extends Controller
 {
+    /** DB paths are stored as storage/Branches/... — public disk root is storage/app/public */
+    private function storagePublicRelativePath(?string $path): ?string
+    {
+        if ($path === null || $path === '') {
+            return null;
+        }
+
+        return ltrim(preg_replace('#^storage/+#', '', $path), '/');
+    }
+
     /**
      * Display a listing of the resource.
      */
@@ -58,21 +68,29 @@ class BranchesController extends Controller
             $Item->save();
 
             if ($request->hasFile('logo')) {
-                if ($Item->logo && Storage::disk('public')->exists($Item->logo)) {
-                    Storage::disk('public')->delete($Item->logo);
+                $oldLogo = $this->storagePublicRelativePath($Item->logo);
+                if ($oldLogo && Storage::disk('public')->exists($oldLogo)) {
+                    Storage::disk('public')->delete($oldLogo);
                 }
                 $name = 'logo';
                 $picname = $Item->id;
-                $Item->logo = $this->saveImage_branchs($request, $name, $picname);
+                $newLogo = $this->saveImage_branchs($request, $name, $picname);
+                if ($newLogo) {
+                    $Item->logo = $newLogo;
+                }
             }
 
             if ($request->hasFile('logo_under')) {
-                if ($Item->logo_under && Storage::disk('public')->exists($Item->logo_under)) {
-                    Storage::disk('public')->delete($Item->logo_under);
+                $oldLogoUnder = $this->storagePublicRelativePath($Item->logo_under);
+                if ($oldLogoUnder && Storage::disk('public')->exists($oldLogoUnder)) {
+                    Storage::disk('public')->delete($oldLogoUnder);
                 }
                 $filename = 'logo_under';
                 $picname = $Item->id;
-                $Item->logo_under = $this->saveImageunder_branchs($request, $filename, $picname);
+                $newLogoUnder = $this->saveImageunder_branchs($request, $filename, $picname);
+                if ($newLogoUnder) {
+                    $Item->logo_under = $newLogoUnder;
+                }
             }
 
             $Item->save();
@@ -85,7 +103,7 @@ class BranchesController extends Controller
             $description = 'ผู้ใช้งาน ' . $loginBy->name . ' ได้ทำการ ' . $type . ' ' . $request->firstname;
             $this->Log($userId, $description, $type);
 
-            return $this->returnSuccess('Success', $Item);
+            return $this->returnSuccess('Success', $Item->fresh());
         } catch (\Throwable $e) {
             DB::rollback();
             return $this->returnErrorData('เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง ' . $e->getMessage(), 404);
@@ -125,21 +143,29 @@ class BranchesController extends Controller
             $item->save();
 
             if ($request->hasFile('logo')) {
-                if ($item->logo && Storage::disk('public')->exists($item->logo)) {
-                    Storage::disk('public')->delete($item->logo);
+                $oldLogo = $this->storagePublicRelativePath($item->logo);
+                if ($oldLogo && Storage::disk('public')->exists($oldLogo)) {
+                    Storage::disk('public')->delete($oldLogo);
                 }
                 $filename = 'logo';
                 $picname = $item->id;
-                $item->logo = $this->saveImage_branchs($request, $filename, $picname);
+                $newLogo = $this->saveImage_branchs($request, $filename, $picname);
+                if ($newLogo) {
+                    $item->logo = $newLogo;
+                }
             }
 
             if ($request->hasFile('logo_under')) {
-                if ($item->logo_under && Storage::disk('public')->exists($item->logo_under)) {
-                    Storage::disk('public')->delete($item->logo_under);
+                $oldLogoUnder = $this->storagePublicRelativePath($item->logo_under);
+                if ($oldLogoUnder && Storage::disk('public')->exists($oldLogoUnder)) {
+                    Storage::disk('public')->delete($oldLogoUnder);
                 }
                 $filename = 'logo_under';
                 $picname = $item->id;
-                $item->logo_under = $this->saveImageunder_branchs($request, $filename, $picname);
+                $newLogoUnder = $this->saveImageunder_branchs($request, $filename, $picname);
+                if ($newLogoUnder) {
+                    $item->logo_under = $newLogoUnder;
+                }
             }
 
             $item->save();
@@ -152,7 +178,7 @@ class BranchesController extends Controller
             $description = 'ผู้ใช้งาน ' . $loginBy->name . ' ได้ทำการ ' . $type . ' id ' . $item->id;
             $this->Log($userId, $description, $type);
 
-            return $this->returnSuccess('Success', $item);
+            return $this->returnSuccess('Success', $item->fresh());
         } catch (\Throwable $e) {
             DB::rollback();
 

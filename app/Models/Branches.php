@@ -38,11 +38,21 @@ class Branches extends Model
     }
     public function getLogoUrlAttribute()
     {
-        return $this->logo ? asset($this->logo) : null;
+        if (!$this->logo) {
+            return null;
+        }
+        $v = $this->updated_at ? $this->updated_at->getTimestamp() : time();
+
+        return asset($this->logo) . '?t=' . $v;
     }
     public function getLogoUnderUrlAttribute()
     {
-        return $this->logo_under ? asset($this->logo_under) : null;
+        if (!$this->logo_under) {
+            return null;
+        }
+        $v = $this->updated_at ? $this->updated_at->getTimestamp() : time();
+
+        return asset($this->logo_under) . '?t=' . $v;
     }
     // public function getLogoUrlAttribute($value)
     // {

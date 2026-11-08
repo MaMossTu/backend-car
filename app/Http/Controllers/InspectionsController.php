@@ -28,7 +28,11 @@ use Illuminate\Support\Facades\DB;
 use App\Models\ServiceTransactions;
 use App\Models\Setting;
 use App\Models\TaxInvoiceAllNos;
+use App\Support\VehicleTaxCalculator;
+use App\Export\BillManageListExport;
+use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Response;
 use App\Models\VehicleInspectionTypes;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
@@ -475,6 +479,7 @@ class InspectionsController extends Controller
             'employee_id' => 'required|integer',
             'date' => 'required|date',
             'remark' => 'nullable|string',
+            'remark_transport' => 'nullable|string',
             'total' => 'required|numeric',
             'discount' => 'nullable|numeric',
 
@@ -646,6 +651,7 @@ class InspectionsController extends Controller
             'employee_id' => 'required|integer',
             'date' => 'required|date',
             'remark' => 'nullable|string',
+            'remark_transport' => 'nullable|string',
             'total' => 'required|numeric',
             'discount' => 'nullable|numeric',
 
@@ -710,6 +716,7 @@ class InspectionsController extends Controller
             $inspection->customer_id         = $customerData['customer_id'];
             $inspection->date                = $request->date; // วันที่ออกบิล
             $inspection->remark              = $request->remark;
+            $inspection->remark_transport    = $request->remark_transport;
             $inspection->discount            = $request->discount;
             $inspection->total               = $request->total;
             $inspection->total_nonvat        = $request->total_nonvat;
@@ -1384,21 +1391,9 @@ class InspectionsController extends Controller
     //     return $this->returnSuccess('เรียกดูข้อมูลสำเร็จ', $items);
     // }
 
-    public function getPage(Request $request)
+    protected function billManageListColumns(): array
     {
-        $length = $request->length;
-        $order = $request->order;
-        $search = $request->search;
-        $start = $request->start;
-        $page = $start / $length + 1;
-
-        $status = $request->status;
-        $customer_id = $request->customer_id;
-        $date_start = $request->date_start;
-        $date_end = $request->date_end;
-        $branch_id = $request->branch_id;
-
-        $columns = [
+        return [
             'id',
             'no',
             'appointment',
@@ -1417,49 +1412,160 @@ class InspectionsController extends Controller
             'total_vatcal',
             'total_nonvatcal',
         ];
+    }
 
-        $query = Inspections::with(['Customers', 'serviceTransactions', 'Customers', 'InspectionVehicles.vehicleServiceTransaction'])
-            ->when($request->has('branch_id'), function ($query) use ($branch_id) {
-                return $query->where('branch_id', $branch_id);
-            })
-            ->select($columns);
+    protected function applyBillManageListFilters($query, Request $request): void
+    {
+        $customer_id = $request->input('customer_id');
+        $date_start  = $request->input('date_start');
+        $date_end    = $request->input('date_end');
+        $branch_id   = $request->input('branch_id');
+        $status      = $request->input('status');
+        $search      = $request->input('search');
 
-        if($date_start && $date_end){
+        if (is_string($search)) {
+            $searchValue = $search;
+        } else {
+            $searchValue = is_array($search) ? ($search['value'] ?? '') : '';
+        }
+
+        if ($request->has('branch_id') && $branch_id !== null && $branch_id !== '') {
+            $query->where('branch_id', $branch_id);
+        }
+
+        if ($date_start && $date_end) {
             $query->whereBetween('date', [$date_start, $date_end]);
         }
-        if (!empty($status)) {
-            $allowedStatuses = ['open', 'overdue', 'unpaid', 'finish', 'cancel'];
-            if (in_array($status, $allowedStatuses)) {
-                $query->where('status', $status);
-            }else if($status == 'remain'){
-                $query->whereIn('status', ['overdue', 'unpaid']);
-            }else {
-                return $this->returnErrorData('สถานะที่ส่งมาไม่ถูกต้อง', 404);
-            }
 
+        if (! empty($status)) {
+            $allowedStatuses = ['open', 'overdue', 'unpaid', 'finish', 'cancel'];
+            if (in_array($status, $allowedStatuses, true)) {
+                $query->where('status', $status);
+            } elseif ($status === 'remain') {
+                $query->whereIn('status', ['overdue', 'unpaid']);
+            }
+        }
+
+        if ($searchValue !== '') {
+            $searchTerm = '%' . $searchValue . '%';
+            $query->where(function ($query) use ($searchTerm) {
+                $query->where('no', 'like', $searchTerm)
+                    ->orWhere('status', 'like', $searchTerm)
+                    ->orWhere('date', 'like', $searchTerm)
+                    ->orWhereHas('InspectionVehicles', function ($q) use ($searchTerm) {
+                        $q->where('license_plate', 'like', $searchTerm);
+                    })
+                    ->orWhereHas('Customers', function ($q) use ($searchTerm) {
+                        $q->where('name', 'like', $searchTerm)
+                            ->orWhere('lname', 'like', $searchTerm)
+                            ->orWhereRaw(
+                                "TRIM(CONCAT(COALESCE(name, ''), ' ', COALESCE(lname, ''))) LIKE ?",
+                                [$searchTerm]
+                            );
+                    });
+            });
+        }
+
+        if (! empty($customer_id)) {
+            $query->where('customer_id', $customer_id);
+        }
+    }
+
+    protected function billManageListQueryForExport(Request $request)
+    {
+        $columns = $this->billManageListColumns();
+        $query   = Inspections::with(['Customers', 'InspectionVehicles.vehicleServiceTransaction'])
+            ->select($columns);
+
+        $this->applyBillManageListFilters($query, $request);
+
+        $orderColumn = (int) $request->input('order_column', 1);
+        $orderDir    = $request->input('order_dir', 'desc') === 'asc' ? 'asc' : 'desc';
+        $orderBy     = $columns[$orderColumn] ?? 'date';
+        $query->orderBy($orderBy, $orderDir);
+
+        return $query;
+    }
+
+    public function exportExcelBillManageList(Request $request)
+    {
+        try {
+            return Excel::download(
+                new BillManageListExport($this->billManageListQueryForExport($request)->get()),
+                'bill_manage_list.xlsx'
+            );
+        } catch (\Throwable $e) {
+            return $this->returnBadRequest($e->getMessage(), 'Error downloading file');
+        }
+    }
+
+    public function exportPDFBillManageList(Request $request)
+    {
+        try {
+            $export = new BillManageListExport($this->billManageListQueryForExport($request)->get());
+
+            $defaultConfig     = (new \Mpdf\Config\ConfigVariables())->getDefaults();
+            $fontDirs          = $defaultConfig['fontDir'];
+            $defaultFontConfig = (new \Mpdf\Config\FontVariables())->getDefaults();
+            $fontData          = $defaultFontConfig['fontdata'];
+
+            $mpdf = new \Mpdf\Mpdf([
+                'mode'              => 'utf-8',
+                'format'            => 'A4-L',
+                'default_font_size' => 10,
+                'fontDir'           => array_merge($fontDirs, [
+                    base_path() . '/custom/font/directory',
+                ]),
+                'fontdata'          => $fontData + [
+                    'th-sarabun' => [
+                        'R'  => 'THSarabun.ttf',
+                        'I'  => 'THSarabun Italic.ttf',
+                        'B'  => 'THSarabun Bold.ttf',
+                        'BI' => 'THSarabun BoldItalic.ttf',
+                    ],
+                ],
+                'default_font'      => 'th-sarabun',
+            ]);
+
+            $mpdf->SetTitle('รายการจัดการบิล');
+            $mpdf->AddPage();
+            $mpdf->WriteHTML(view('export.BillManageList', [
+                'headings' => $export->headings(),
+                'rows'     => $export->array(),
+            ])->render());
+
+            $pdfContent = $mpdf->Output('', 'S');
+
+            return Response::make($pdfContent, 200, [
+                'Content-Type'        => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="bill_manage_list.pdf"',
+            ]);
+        } catch (\Throwable $e) {
+            return $this->returnBadRequest($e->getMessage(), 'Error downloading file');
+        }
+    }
+
+    public function getPage(Request $request)
+    {
+        $length = $request->length;
+        $order = $request->order;
+        $start = $request->start;
+        $page = $start / $length + 1;
+
+        $status = $request->status;
+        $columns = $this->billManageListColumns();
+
+        $query = Inspections::with(['Customers', 'serviceTransactions', 'Customers', 'InspectionVehicles.vehicleServiceTransaction'])
+            ->select($columns);
+
+        $this->applyBillManageListFilters($query, $request);
+
+        if (! empty($status) && ! in_array($status, ['open', 'overdue', 'unpaid', 'finish', 'cancel', 'remain'], true)) {
+            return $this->returnErrorData('สถานะที่ส่งมาไม่ถูกต้อง', 404);
         }
 
         $orderBy = $columns[$order[0]['column']] ?? 'id';
         $query->orderBy($orderBy, $order[0]['dir']);
-        // $query->orderBy('created_at', 'desc');
-
-        if (!empty($search['value'])) {
-            $query->where(function ($query) use ($search) {
-                $query->where('no', 'like', '%' . $search['value'] . '%')
-                      ->orWhere('status', 'like', '%' . $search['value'] . '%')
-                      ->orWhere('date', 'like', '%' . $search['value'] . '%');
-
-                // ค้นหา license_plate จากตาราง InspectionVehicles
-                $query->orWhereHas('InspectionVehicles', function ($q) use ($search) {
-                    $q->where('license_plate', 'like', '%' . $search['value'] . '%');
-                });
-            });
-        }
-
-        // return $customer_id;
-        if (!empty($customer_id)) {
-            $query->where('customer_id', $customer_id);
-        }
 
         $items = $query->paginate($length, ['*'], 'page', $page);
 
@@ -2084,65 +2190,34 @@ class InspectionsController extends Controller
             $tax_due_date = Carbon::parse($request->tax_due_date);
             $tax_renewal_date = Carbon::parse($request->tax_renewal_date);
 
-            $vehicle_inspection_types_id = $request->vehicle_inspection_types_id; // ประเภทรถ ดึง id จาก VehicleInspectionTypes เพื่อเช็คว่า จะต้องคำนวณแบบไหน
-            $fuel_type = $request->fuel_type; // ประเภทเครื่องยนต์ ev กับ hybrid
+            $vehicle_inspection_types_id = $request->vehicle_inspection_types_id;
+            $fuel_type = $request->fuel_type;
             $is_corporate = $request->is_corporate;
 
+            $calculator = new VehicleTaxCalculator();
+            $periods = $calculator->buildTaxPeriods($tax_due_date, $tax_renewal_date);
+
             $tax_details = [];
+            foreach ($periods as $period) {
+                $vehicleAgeYears = $period['fiscal_year_ce'] - $regeister_date->year;
+                $total = $this->calculateTax(
+                    $vehicle_inspection_types_id,
+                    $cc,
+                    $weight,
+                    $vehicleAgeYears
+                );
+                $total = VehicleTaxCalculator::applyTaxModifiers($total, $is_corporate, $fuel_type);
 
-            if ($tax_renewal_date->lessThan($tax_due_date)) {
-                $year = $tax_due_date->year + 1;
-                $total = $this->calculateTax($vehicle_inspection_types_id, $cc, $weight, $year - $regeister_date->year);
-
-                // ตรวจสอบนิติบุคคล
-                if ($is_corporate == 1) {
-                    $total *= 2;
-                }
-                if ($fuel_type === 'gas') {
-                    $total *= 0.5;
-                }
-                if ($fuel_type === 'Hybrid') {
-                    $total *= 0.75;
-                }
-
-                $tax_details[] = [
-                    'year' => $year + 543,
-                    'total' => number_format($total, 2),
-                    'tax_fines' => number_format(0, 2), // กรณีต่อก่อน ไม่ต้องเสียค่าปรับ
-                ];
-            }
-
-            while ($tax_due_date->lessThanOrEqualTo($tax_renewal_date)) {
-                $year = $tax_due_date->year + 1;
-
-                $total = $this->calculateTax($vehicle_inspection_types_id, $cc, $weight, $year - $regeister_date->year);
-
-                // ตรวจสอบนิติบุคคล
-                if ($is_corporate == 1) {
-                    $total *= 2;
-                }
-                if ($fuel_type === 'gas') {
-                    $total *= 0.5;
-                }
-                if ($fuel_type === 'Hybrid') {
-                    $total *= 0.75;
-                }
-
-                // คำนวณค่าปรับ
                 $tax_fines = 0;
-                $months_diff = $tax_due_date->diffInMonths($tax_renewal_date);
-                if ($months_diff > 0) {
-                    $tax_fines = $this->cal_TaxFines($total, $months_diff);
+                if ($period['fine_months'] > 0) {
+                    $tax_fines = $this->cal_TaxFines($total, $period['fine_months']);
                 }
 
                 $tax_details[] = [
-                    'year' => $year + 543,
-                    'total' => number_format($total, 2),
+                    'year'      => $period['fiscal_year_ce'] + 543,
+                    'total'     => number_format($total, 2),
                     'tax_fines' => number_format($tax_fines, 2),
                 ];
-
-                // เลื่อนปีครบกำหนดภาษีไปปีถัดไป
-                $tax_due_date->addYear();
             }
 
             return $this->returnSuccess('เรียกดูข้อมูลสำเร็จ', $tax_details);
@@ -2614,16 +2689,19 @@ class InspectionsController extends Controller
 
             $taxprices = $Item->InspectionVehicles()->with('vehicleServiceTransaction')->get();
 
-            $servicePrice = null;
+            $servicePrice = 0;
+            $hasTaxService = false;
             foreach ($taxprices as $taxprice) {
                 foreach ($taxprice->vehicleServiceTransaction as $transaction) {
-                    if ($transaction->service_id == 3) {
-                        $servicePrice = $transaction->service_price;
-                        break 2; // หยุดการค้นหาเมื่อเจอ service_id = 3
+                    if ((int) $transaction->service_id === 3) {
+                        $hasTaxService = true;
+                    }
+                    if (in_array((int) $transaction->service_id, [3, 4], true)) {
+                        $servicePrice += (float) $transaction->service_price;
                     }
                 }
             }
-            if ($servicePrice === null) {
+            if (! $hasTaxService) {
                 return $this->returnErrorData('ไม่พบข้อมูล service_id = 3', 404);
             }
 
@@ -3030,6 +3108,7 @@ class InspectionsController extends Controller
         $status = $request->status;
         $date_start = $request->date_start;
         $date_end = $request->date_end;
+        $branch_id = $request->input('branch_id');
 
         $searchable = [
             'inspections.no',
@@ -3055,30 +3134,29 @@ class InspectionsController extends Controller
                 'vehicles.license_plate',
                 'vehicles.registration_date',
                 DB::raw("TRIM(CONCAT(COALESCE(customers.name,''), ' ', COALESCE(customers.lname,''))) as customer_name"),
-                'inspections.transaction_status',
+                DB::raw("
+                    CASE
+                        WHEN inspections.transaction_status = 'closedebt' THEN 'closedebt'
+                        WHEN inspections.paytrue < SUM(vechicle_services_transactions.service_price) THEN 'reducedebt'
+                        WHEN inspections.paytrue > SUM(vechicle_services_transactions.service_price) THEN 'adddebt'
+                        ELSE inspections.transaction_status
+                    END as transaction_status
+                "),
                 DB::raw('SUM(vechicle_services_transactions.service_price) as service_price'),
                 'inspections.paytrue',
                 DB::raw("
                     CASE
-                        WHEN inspections.transaction_status = 'reducedebt'
-                            THEN CONCAT(
-                                'ลด ',
-                                FORMAT(ABS(inspections.paytrue - SUM(vechicle_services_transactions.service_price)), 0),
-                                ' บาท'
-                            )
-
-                        WHEN (inspections.paytrue - SUM(vechicle_services_transactions.service_price)) < 0
-                            THEN CONCAT(
-                                'เพิ่ม ',
-                                FORMAT(ABS(inspections.paytrue - SUM(vechicle_services_transactions.service_price)), 0),
-                                ' บาท'
-                            )
-
-                        ELSE CONCAT(
+                        WHEN inspections.paytrue < SUM(vechicle_services_transactions.service_price) THEN CONCAT(
                             'คืน ',
+                            FORMAT(SUM(vechicle_services_transactions.service_price) - inspections.paytrue, 0),
+                            ' บาท'
+                        )
+                        WHEN inspections.paytrue > SUM(vechicle_services_transactions.service_price) THEN CONCAT(
+                            'เพิ่ม ',
                             FORMAT(inspections.paytrue - SUM(vechicle_services_transactions.service_price), 0),
                             ' บาท'
                         )
+                        ELSE '-'
                     END as payextra
                 ")
             )
@@ -3096,15 +3174,32 @@ class InspectionsController extends Controller
                 'inspections.paytrue'
             );
 
-        // Updated the whereRaw to use the sum of service prices
-        $querys->havingRaw('inspections.paytrue - SUM(vechicle_services_transactions.service_price) != 0');
+        if (!empty($status) && $status === 'closedebt') {
+            $querys->where('inspections.transaction_status', 'closedebt');
+        } else {
+            $querys->havingRaw(
+                '(inspections.transaction_status = \'closedebt\' OR inspections.paytrue - SUM(vechicle_services_transactions.service_price) != 0)'
+            );
+        }
 
         if (!empty($status)) {
-            $querys->where('inspections.transaction_status', $status);
+            if ($status === 'adddebt') {
+                $querys->where('inspections.transaction_status', '!=', 'closedebt');
+                $querys->havingRaw('inspections.paytrue > SUM(vechicle_services_transactions.service_price)');
+            } elseif ($status === 'reducedebt') {
+                $querys->where('inspections.transaction_status', '!=', 'closedebt');
+                $querys->havingRaw('inspections.paytrue < SUM(vechicle_services_transactions.service_price)');
+            } elseif ($status !== 'closedebt') {
+                $querys->where('inspections.transaction_status', $status);
+            }
         }
 
         if (!empty($date_start) && !empty($date_end)) {
             $querys->whereBetween('inspections.date', [$date_start, $date_end]);
+        }
+
+        if ($branch_id !== null && $branch_id !== '') {
+            $querys->where('inspections.branch_id', $branch_id);
         }
 
         if (!empty($search)) {
@@ -3115,12 +3210,89 @@ class InspectionsController extends Controller
             });
         }
 
+        // DataTables ส่ง columns[].data เป็น index ("0","1",...) เมื่อไม่กำหนด columns ใน FE
+        $orderColumnMap = [
+            0 => 'inspections.id',
+            1 => 'inspections.no',
+            2 => 'inspections.date',
+            3 => 'vehicles.license_plate',
+            4 => 'vehicles.registration_date',
+            5 => 'customers.name',
+            6 => 'inspections.transaction_status',
+            7 => 'inspections.id',
+            8 => 'inspections.paytrue',
+            9 => 'inspections.id',
+            10 => 'inspections.paid_date',
+            11 => 'inspections.id',
+        ];
+        $fieldOrderMap = [
+            'id' => 'inspections.id',
+            'bill_number' => 'inspections.no',
+            'date' => 'inspections.date',
+            'license_plate' => 'vehicles.license_plate',
+            'registration_date' => 'vehicles.registration_date',
+            'customer_name' => 'customers.name',
+            'transaction_status' => 'inspections.transaction_status',
+            'service_price' => 'inspections.id',
+            'paytrue' => 'inspections.paytrue',
+            'payextra' => 'inspections.id',
+            'paid_date' => 'inspections.paid_date',
+        ];
+
+        $orderColIndex = (int) ($order[0]['column'] ?? 2);
+        $orderDir = strtolower($order[0]['dir'] ?? 'desc') === 'asc' ? 'asc' : 'desc';
+        $dataField = $columns[$orderColIndex]['data'] ?? null;
+        if ($dataField !== null && $dataField !== '' && isset($fieldOrderMap[$dataField])) {
+            $orderBy = $fieldOrderMap[$dataField];
+        } else {
+            $orderBy = $orderColumnMap[$orderColIndex] ?? 'inspections.date';
+        }
+
         $query = $querys
-            ->orderBy($columns[$order[0]['column']]['data'], $order[0]['dir'])
+            ->orderBy($orderBy, $orderDir)
             ->paginate($perPage, ['*'], 'page', ($page / $perPage) + 1);
+
+        $query->getCollection()->transform(function ($row) {
+            return $this->normalizeDebtListRowDisplay($row);
+        });
 
         return $this->returnSuccess('Success' ,$query);
     }
+
+    /** หน้ารายการหนี้ — ส่วนต่าง 0 → payextra '-' และไม่โชว์ badge หนี้ */
+    private function normalizeDebtListRowDisplay(object $row): object
+    {
+        $billed = (float) ($row->service_price ?? 0);
+        $pay    = ($row->paytrue !== null && $row->paytrue !== '') ? (float) $row->paytrue : null;
+        $extra  = 0.0;
+        $refund = 0.0;
+
+        if ($pay !== null) {
+            if ($pay > $billed) {
+                $extra = $pay - $billed;
+            } elseif ($pay < $billed) {
+                $refund = $billed - $pay;
+            }
+        }
+
+        if ($extra > 0) {
+            $row->payextra = 'เพิ่ม ' . number_format($extra, 0) . ' บาท';
+        } elseif ($refund > 0) {
+            $row->payextra = 'คืน ' . number_format($refund, 0) . ' บาท';
+        } else {
+            $row->payextra = '-';
+        }
+
+        if (($row->transaction_status ?? null) === 'closedebt') {
+            return $row;
+        }
+        if ($extra <= 0 && $refund <= 0) {
+            $row->transaction_status = null;
+        }
+
+        return $row;
+    }
+
     public function Update_status(Request $request)
     {
         $loginBy = Auth()->user();

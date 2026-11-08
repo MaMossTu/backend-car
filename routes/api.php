@@ -405,6 +405,7 @@ Route::get('/report/reportExportPDFmonth', [ReportController::class, 'reportExpo
 Route::get('/report/reportExportPDFday', [ReportController::class, 'reportExportPDFday']);
 Route::get('/report/reportExportPDFSMS', [ReportController::class, 'reportExportPDFSMS']);
 Route::get('/report/reportExportPDFextent_customer', [ReportController::class, 'reportExportPDFextent_customer']);
+Route::get('/report/excel/extent_customer', [ReportController::class, 'downloadExcel_extent_customer']);
 Route::get('/report/reportExportPDF_gas', [ReportController::class, 'reportExportPDF_gas']);
 Route::get('/report/reportExportPDFexpense', [ReportController::class, 'reportExportPDFexpense']);
 Route::get('/report/reportExportPDFcheck_gas', [ReportController::class, 'reportExportPDFcheck_gas']);
@@ -468,6 +469,8 @@ Route::get('/report/excel/gas1_report', [ReportController::class, 'downloadExpor
 Route::get('/report/excel/gascheck', [ReportController::class, 'downloadExcelgas_check']);
 Route::get('/report/excel/insurance', [ReportController::class, 'downloadExcelInsuranceExport']);
 Route::get('/report/excel/insurancereport', [ReportController::class, 'downloadExcelInsuranceReportExport']);
+Route::get('/report/excel/bill_manage_list', [InspectionsController::class, 'exportExcelBillManageList']);
+Route::get('/report/reportExportPDFbill_manage_list', [InspectionsController::class, 'exportPDFBillManageList']);
 Route::get('/report/excel/day', [ReportController::class, 'downloadExcelDay']);
 Route::get('/report/excel/month', [ReportController::class, 'downloadExcelmonth']);
 Route::get('/report/excel/profit', [ReportController::class, 'downloadExcelProfitReportExport']);
@@ -500,7 +503,7 @@ Route::delete('/save_doc/delete/{id}', [SaveDocumentController::class, 'destroy'
 Route::post('/Getpage/GetpageCheck_car_report', [ReportController::class, 'GetpageCheck_car_report']);
 Route::post('/Getpage/Car_tax', [ReportController::class, 'GetpageCar_tax']);
 Route::post('/Getpage/check_gas', [ReportController::class, 'Getpagecheck_gas2']);
-Route::post('/Getpage/EMS', [ReportController::class, 'GetpageEMS']);
+Route::post('/Getpage/EMS', [ReportController::class, 'GetPageEMS']);
 Route::post('/Getpage/PrbRenewal', [ReportController::class, 'GetPage_PrbRenewals']);
 Route::post('/Getpage/InsurancesRenewals', [ReportController::class, 'GetPage_InsurancesRenewals']);
 
@@ -677,6 +680,7 @@ Route::get('/invoice/show', [InvoiceController::class, 'index']);
 Route::get('/invoice/showAllpaid', [InvoiceController::class, 'index_paid']);
 Route::get('/invoice/show_invoice_paid', [InvoiceController::class, 'index_invoice']);
 Route::get('/invoice/showby', [InvoiceController::class, 'indexby']);
+Route::get('/invoice/show_for_billing', [BillingController::class, 'index_for_billing']);
 Route::get('/invoice/showID/{id}', [InvoiceController::class, 'showID']);
 Route::post('/invoice/add', [InvoiceController::class, 'store'])->middleware('auth:api');
 Route::post('/invoice/update/{id}', [InvoiceController::class, 'update'])->middleware('auth:api');
@@ -718,6 +722,8 @@ Route::post('/taxinvoice/store_by_work_order', [TaxInvoiceController::class, 'st
 Route::post('/taxinvoice/update/{id}', [TaxInvoiceController::class, 'update'])->middleware('auth:api');
 Route::delete('/taxinvoice/delete/{id}', [TaxInvoiceController::class, 'destroy'])->middleware('auth:api');
 Route::post('/taxinvoice/getPage', [TaxInvoiceController::class, 'getPage_all']);
+Route::get('/report/excel/taxinvoice_list', [TaxInvoiceController::class, 'exportExcelTaxinvoiceList']);
+Route::get('/report/reportExportPDFtaxinvoice_list', [TaxInvoiceController::class, 'exportPDFTaxinvoiceList']);
 Route::put('/taxinvoice/update_status/{id}', [TaxInvoiceController::class, 'update_status']);
 Route::get('/taxinvoice/report/{id}', [TaxInvoiceController::class, 'pdf']); // *ใบกำกับภาษีlo
 
@@ -749,3 +755,4 @@ Route::get('/report/excel/EMS_report', [ReportToController::class, 'EMS_report_e
 Route::get('/report/gas_report', [ReportController::class, 'gas_report']);
 Route::get('/report/remind_report', [ReportToController::class, 'remind_report']);
 Route::get('/export/commissPDF',[CommissionController::class,'commissPDF']);
+Route::get('/export/commissExcel',[CommissionController::class,'commissExcel']);

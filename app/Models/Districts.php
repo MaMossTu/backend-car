@@ -21,12 +21,10 @@ class Districts extends Model
 
     }
     public function Provinces(){
-        return $this->hasMany(Provinces::class);
-
+        return $this->belongsTo(Provinces::class, 'province_id');
     }
     public function Branches(){
         return $this->hasMany(Branches::class, 'branche_id');
     }
 
 }
-

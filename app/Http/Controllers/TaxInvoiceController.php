@@ -10,9 +10,11 @@ use App\Models\Invoice;
 use App\Models\TaxInvoiceAllNos;
 use App\Models\TaxInvoiceService;
 use App\Models\WorkOrder;
+use App\Export\TaxInvoiceListExport;
 use Carbon\Carbon;
 use DateTime;
 use Illuminate\Http\Request;
+use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Response;
 use Illuminate\Support\Facades\Validator;
@@ -834,23 +836,13 @@ class TaxInvoiceController extends Controller
     //     return response()->json($response);
     // }
 
-    public function getPage_all(Request $request)
+    protected function buildTaxInvoiceListQuery(Request $request)
     {
-        $perPage = $request->input('length', 10);
-        $page = $request->input('start', 0);
-        $search = $request->input('search.value', "");
-        $sortField = $request->input('sortField', 'id');
-        $sortOrder = $request->input('sortOrder', -1);
-
-        $search_status = $request->input('search_status', "");
-        $customer_id = $request->input('customer_id', "");
-        $month = $request->input('month', "");
-        $branche_id = $request->input('branche_id', "");
-
-        $direction = 'ASC';
-        if ($sortOrder == -1) {
-            $direction = 'DESC';
-        }
+        $search = $request->input('search.value', $request->input('search', ''));
+        $search_status = $request->input('search_status', '');
+        $customer_id = $request->input('customer_id', '');
+        $month = $request->input('month', '');
+        $branche_id = $request->input('branche_id', '');
 
         $query = TaxInvoiceAllNos::with(
             'Inspection.Customers',
@@ -858,13 +850,10 @@ class TaxInvoiceController extends Controller
             'TaxInvoice.WorkOrder',
         );
 
-        // If search term is provided
         if ($search) {
             $query->where(function ($query) use ($search) {
-                // Search in TaxInvoiceAllNos fields
                 $query->where('no', 'LIKE', '%' . $search . '%');
 
-                // Search in related Inspection
                 $query->orWhereHas('Inspection', function ($q) use ($search) {
                     $q->where('no', 'LIKE', '%' . $search . '%')
                     ->orWhereHas('Customers', function ($c) use ($search) {
@@ -873,7 +862,6 @@ class TaxInvoiceController extends Controller
                     });
                 });
 
-                // Search in related TaxInvoice
                 $query->orWhereHas('TaxInvoice', function ($q) use ($search) {
                     $q->where('no', 'LIKE', '%' . $search . '%')
                     ->orWhere('customer_name', 'LIKE', '%' . $search . '%')
@@ -882,7 +870,6 @@ class TaxInvoiceController extends Controller
             });
         }
 
-        // Apply other filters if needed
         if ($customer_id) {
             $query->where(function ($q) use ($customer_id) {
                 $q->whereHas('Inspection', function ($q) use ($customer_id) {
@@ -919,10 +906,101 @@ class TaxInvoiceController extends Controller
                 });
             });
         }
-        $results = $query->orderBy($sortField, $direction)
-                        ->paginate($perPage, ['*'], 'page', ($page / $perPage) + 1);
+
+        $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date')) : null;
+        $endDate   = $request->input('end_date') ? Carbon::parse($request->input('end_date')) : null;
+        if ($startDate && $endDate) {
+            $query->whereBetween('date', [
+                $startDate->copy()->startOfDay(),
+                $endDate->copy()->endOfDay(),
+            ]);
+        }
+
+        return $query;
+    }
+
+    public function getPage_all(Request $request)
+    {
+        $perPage = $request->input('length', 10);
+        $page = $request->input('start', 0);
+        $sortField = $request->input('sortField', 'id');
+        $sortOrder = $request->input('sortOrder', -1);
+
+        $direction = 'ASC';
+        if ($sortOrder == -1) {
+            $direction = 'DESC';
+        }
+
+        $results = $this->buildTaxInvoiceListQuery($request)
+            ->orderBy($sortField, $direction)
+            ->paginate($perPage, ['*'], 'page', ($page / $perPage) + 1);
 
         return $this->returnSuccess('Success', $results);
+    }
+
+    protected function taxInvoiceListRowsForExport(Request $request)
+    {
+        return $this->buildTaxInvoiceListQuery($request)
+            ->orderBy('id', 'DESC')
+            ->get();
+    }
+
+    public function exportExcelTaxinvoiceList(Request $request)
+    {
+        try {
+            return Excel::download(
+                new TaxInvoiceListExport($this->taxInvoiceListRowsForExport($request)),
+                'taxinvoice_list.xlsx'
+            );
+        } catch (\Throwable $e) {
+            return $this->returnBadRequest($e->getMessage(), 'Error downloading file');
+        }
+    }
+
+    public function exportPDFTaxinvoiceList(Request $request)
+    {
+        try {
+            $export = new TaxInvoiceListExport($this->taxInvoiceListRowsForExport($request));
+
+            $defaultConfig     = (new \Mpdf\Config\ConfigVariables())->getDefaults();
+            $fontDirs          = $defaultConfig['fontDir'];
+            $defaultFontConfig = (new \Mpdf\Config\FontVariables())->getDefaults();
+            $fontData          = $defaultFontConfig['fontdata'];
+
+            $mpdf = new \Mpdf\Mpdf([
+                'mode'              => 'utf-8',
+                'format'            => 'A4-L',
+                'default_font_size' => 10,
+                'fontDir'           => array_merge($fontDirs, [
+                    base_path() . '/custom/font/directory',
+                ]),
+                'fontdata'          => $fontData + [
+                    'th-sarabun' => [
+                        'R'  => 'THSarabun.ttf',
+                        'I'  => 'THSarabun Italic.ttf',
+                        'B'  => 'THSarabun Bold.ttf',
+                        'BI' => 'THSarabun BoldItalic.ttf',
+                    ],
+                ],
+                'default_font'      => 'th-sarabun',
+            ]);
+
+            $mpdf->SetTitle('รายการใบกำกับภาษี');
+            $mpdf->AddPage();
+            $mpdf->WriteHTML(view('export.TaxInvoiceList', [
+                'headings' => $export->headings(),
+                'rows'     => $export->array(),
+            ])->render());
+
+            $pdfContent = $mpdf->Output('', 'S');
+
+            return Response::make($pdfContent, 200, [
+                'Content-Type'        => 'application/pdf',
+                'Content-Disposition' => 'inline; filename="taxinvoice_list.pdf"',
+            ]);
+        } catch (\Throwable $e) {
+            return $this->returnBadRequest($e->getMessage(), 'Error downloading file');
+        }
     }
 
     public function pdf(Request $request, $id)

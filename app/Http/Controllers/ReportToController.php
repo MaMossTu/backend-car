@@ -50,6 +50,37 @@ use function PHPUnit\Framework\returnSelf;
 
 class ReportToController extends Controller
 {
+    protected function formatInspectionRemarks($inspection): string
+    {
+        if (!$inspection) {
+            return '';
+        }
+        $parts = [];
+        if (!empty($inspection->remark)) {
+            $parts[] = $inspection->remark;
+        }
+        if (!empty($inspection->remark_transport)) {
+            $parts[] = $inspection->remark_transport;
+        }
+
+        return implode(' / ', $parts);
+    }
+
+    protected function inspectionServiceLineName($transaction, $inspection): string
+    {
+        $serviceId = (int) ($transaction->service_id ?? 0);
+        $serviceName = $transaction->service_name
+            ?? ($transaction->service->name ?? '-');
+        if ($serviceId === 14 && !empty($inspection->remark)) {
+            return $serviceName . ' ( ' . $inspection->remark . ' )';
+        }
+        if ($serviceId === 15 && !empty($inspection->remark_transport)) {
+            return $serviceName . ' ( ' . $inspection->remark_transport . ' )';
+        }
+
+        return $serviceName;
+    }
+
     public function Quotation($id)
     {
 
@@ -85,7 +116,7 @@ class ReportToController extends Controller
             // return $provincevehiclename;
             if ($inspectionVehicle->vehicleServiceTransaction) {
                 foreach ($inspectionVehicle->vehicleServiceTransaction as $serviceTransaction) {
-                    $servicename[] = $serviceTransaction->service_name;
+                    $servicename[] = $this->inspectionServiceLineName($serviceTransaction, $data);
                     $serviceprice[] = $serviceTransaction->service_price;
                 }
             }
@@ -125,11 +156,13 @@ class ReportToController extends Controller
 
         $total_amount = $data->total;
         $discount = $data->discount;
-        $remark = $data->remark;
+        $remark = $this->formatInspectionRemarks($data);
 
         // ตัดข้อความโดยใช้ substr หรือ mb_substr เพื่อรองรับ UTF-8
         $maxLength = 255; // จำนวนตัวอักษรสูงสุด
-        if (mb_strlen($remark, 'UTF-8') > $maxLength) {
+        if ($remark === '') {
+            $shortRemark = '';
+        } elseif (mb_strlen($remark, 'UTF-8') > $maxLength) {
             $shortRemark = mb_substr($remark, 0, $maxLength, 'UTF-8') . '...';
         } else {
             $shortRemark = $remark;
@@ -910,7 +943,7 @@ class ReportToController extends Controller
         $transactionarr =  $data->InspectionVehicles[0]->vehicleServiceTransaction;
         foreach ($transactionarr as $transaction) {
 
-            $serviceName = $transaction->service_name ?? null;
+            $serviceName = $this->inspectionServiceLineName($transaction, $data);
             $servicePrice = $transaction->service_price ?? null;
             $totalAmount += $servicePrice;
             $id_gen += 1;
@@ -934,6 +967,7 @@ class ReportToController extends Controller
         // return $branche_image;
         $totalcal = $data->discount ?? 0;
         $total = $totalAmount - $totalcal ?? 0;
+        $billRemark = $this->formatInspectionRemarks($data);
 
 
         $defaultConfig = (new \Mpdf\Config\ConfigVariables())->getDefaults();
@@ -1161,6 +1195,9 @@ class ReportToController extends Controller
                         <td style="border-bottom: 1px solid black;" colspan="2"><strong>ยอดสุทธิ: </strong></td>
                         <td style="border-bottom: 1px solid black; text-align: right;">' . number_format($total, 2) . '</td>
                     </tr>
+                    <tr>
+                        <td colspan="3" style="padding-top: 8px;"><strong>หมายเหตุ:</strong> ' . ($billRemark !== '' ? $billRemark : '-') . '</td>
+                    </tr>
                 </table>
             </div>
             </div>
@@ -1239,7 +1276,7 @@ class ReportToController extends Controller
 
         foreach ($data->InspectionVehicles[0]->vehicleServiceTransaction as $transaction) {
 
-            $bill_serviceName = $transaction->service_name ?? $transaction->service->name ?? null;
+            $bill_serviceName = $this->inspectionServiceLineName($transaction, $data);
             $bill_servicePrice = $transaction->service_price ?? null;
             $round += 1;
             $totalAmount += $bill_servicePrice;
@@ -1257,6 +1294,7 @@ class ReportToController extends Controller
                 <td>&nbsp;</td>
             </tr>';
         }
+        $receiptRemark = $this->formatInspectionRemarks($data);
         $defaultConfig = (new \Mpdf\Config\ConfigVariables())->getDefaults();
         $fontDirs = $defaultConfig['fontDir'];
         $defaultFontConfig = (new \Mpdf\Config\FontVariables())->getDefaults();
@@ -1395,6 +1433,8 @@ class ReportToController extends Controller
                     </table>
 
                     <hr>
+
+                    <p>หมายเหตุ: ' . ($receiptRemark !== '' ? $receiptRemark : '-') . '</p>
 
                     <div class="footer">
                         <p>พนักงาน: ___________________________</p>
@@ -1601,10 +1641,8 @@ class ReportToController extends Controller
 
                 $insuranceName = $insuranceRenewal->insuranceName->name ?? '';
                 $nameWithResname = !empty($insuranceName) ? $serviceName . ' ( ' . $insuranceName  . ' )' : $serviceName;
-                if($serviceId == 14){
-                    $nameWithResname = $serviceName . ' ( ' . $data->remark  . ' )';
-                }elseif($serviceId == 15){
-                    $nameWithResname = $serviceName . ' ( ' . $data->remark_transport  . ' )';
+                if ($serviceId == 14 || $serviceId == 15) {
+                    $nameWithResname = $this->inspectionServiceLineName($transaction, $data);
                 }
 
                 // ตรวจสอบว่าบริการนี้เคยเพิ่มไปแล้วหรือยัง
@@ -4103,11 +4141,16 @@ class ReportToController extends Controller
         );
     }
 
-    public function InsurancesRenewals_report(Request $request)
+    /**
+     * รายงานประกัน — query ให้ตรงหน้า insuranceManage/list (GetPage_InsurancesRenewals)
+     */
+    private function buildInsurancesRenewalsReportQuery(Request $request)
     {
         $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date')) : null;
         $endDate = $request->input('end_date') ? Carbon::parse($request->input('end_date')) : null;
-        $branchId  = $request->input('branch_id', null);
+        $branchId = $request->input('branch_id');
+        $policyNumberFilter = $request->input('policy_number');
+
         $columns = [
             'inspections.id',
             'inspections.no',
@@ -4134,7 +4177,8 @@ class ReportToController extends Controller
             ->leftJoin('inspection_vehicles', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
             ->leftJoin('customers', 'inspections.customer_id', '=', 'customers.id')
             ->leftJoin('vechicle_services_transactions', 'inspection_vehicles.id', '=', 'vechicle_services_transactions.inspection_vehicle_id')
-            ->leftJoin('insurances_renewals', 'vechicle_services_transactions.id', '=', 'insurances_renewals.vechicle_services_transaction_id')->where('service_id', 7)
+            ->leftJoin('insurances_renewals', 'vechicle_services_transactions.id', '=', 'insurances_renewals.vechicle_services_transaction_id')
+            ->where('vechicle_services_transactions.service_id', 7)
             ->leftJoin('insurance_renewal_types', 'insurances_renewals.insurance_renewal_type_id', '=', 'insurance_renewal_types.id')
             ->leftJoin('insurance_names', 'insurances_renewals.insurance_names_id', '=', 'insurance_names.id')
             ->whereNull('inspection_vehicles.deleted_at')
@@ -4144,18 +4188,37 @@ class ReportToController extends Controller
             ->whereNull('insurance_names.deleted_at')
             ->whereNull('customers.deleted_at')
             ->whereNull('inspections.deleted_at')
-            ->where('inspections.branch_id',$branchId)
-            ->distinct();
+            ->where('inspections.status', '!=', 'cancel');
+
+        if ($branchId !== null && $branchId !== '') {
+            $query->where('inspections.branch_id', $branchId);
+        }
 
         if ($startDate && $endDate) {
             $query->whereBetween('inspections.date', [$startDate, $endDate]);
         }
 
-        if ($request->has('insurance_name') && !empty($request->input('insurance_name'))) {
+        if ($policyNumberFilter !== null && $policyNumberFilter !== '') {
+            if ((int) $policyNumberFilter === 0) {
+                $query->whereNull('insurances_renewals.policy_number');
+            } elseif ((int) $policyNumberFilter === 1) {
+                $query->whereNotNull('insurances_renewals.policy_number');
+            }
+        }
+
+        if ($request->filled('insurance_name')) {
             $query->where('insurance_names.name', 'like', '%' . $request->input('insurance_name') . '%');
         }
 
-        $data = $query->get();
+        return $query->distinct()->orderByDesc('inspections.date')->orderByDesc('inspections.no');
+    }
+
+    public function InsurancesRenewals_report(Request $request)
+    {
+        $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date')) : null;
+        $endDate = $request->input('end_date') ? Carbon::parse($request->input('end_date')) : null;
+
+        $data = $this->buildInsurancesRenewalsReportQuery($request)->get();
 
         $defaultConfig     = (new \Mpdf\Config\ConfigVariables())->getDefaults();
         $fontDirs          = $defaultConfig['fontDir'];
@@ -4193,8 +4256,8 @@ class ReportToController extends Controller
         <thead>
             <table border="1" style="width:100%; border-collapse: collapse;">
                 <tr>
-                    <td colspan="9" style="border:1px solid #333; font-size: 22px; font-weight: bold;" align="center">
-                        รายงานประกัน วันที่ ' . $startDate->format('d/m/') . (Carbon::parse($startDate)->year + 543)  . ' ถึง ' . $endDate->format('d/m/') . (Carbon::parse($startDate)->year + 543) . '
+                    <td colspan="10" style="border:1px solid #333; font-size: 22px; font-weight: bold;" align="center">
+                        รายงานประกัน วันที่ ' . ($startDate ? $startDate->format('d/m/') . ($startDate->year + 543) : '-') . ' ถึง ' . ($endDate ? $endDate->format('d/m/') . ($endDate->year + 543) : '-') . '
                     </td>
                 </tr>
                 <tr>
@@ -4206,7 +4269,8 @@ class ReportToController extends Controller
                     <th>ประกันภัย</th>
                     <th>วันที่เริ่มการคุ้มครอง</th>
                     <th>วันที่สิ้นสุดการคุ้มครอง</th>
-                    <th>เลขกรรมธรรม์</th>
+                    <th>ประเภทประกันภัย</th>
+                    <th>เลขกรมธรรม์</th>
                 </tr>
             </thead>
                 <tbody>';
@@ -4222,6 +4286,7 @@ class ReportToController extends Controller
                 <td align="center">' . ($item->name ?: '-') . '</td>
                 <td align="center">' . ($item->date_start ? Carbon::parse($item->date_start)->format('d/m/') . (Carbon::parse($item->date_start)->year + 543) : '-') . '</td>
                 <td align="center">' . ($item->date_end ? Carbon::parse($item->date_end)->format('d/m/') . (Carbon::parse($item->date_end)->year + 543) : '-') . '</td>
+                <td align="center">' . ($item->insurance_renewal_type_name ?: '-') . '</td>
                 <td align="center">' . ($item->policy_number ?: '-') . '</td>
             </tr>';
         }
@@ -4234,7 +4299,7 @@ class ReportToController extends Controller
 
         $headers = [
             'Content-Type'                  => 'application/pdf',
-            'Content-Disposition'           => 'inline; filename=mpdf.pdf',
+            'Content-Disposition'           => 'inline; filename=insurance_report.pdf',
             'Access-Control-Expose-Headers' => 'Accept-Ranges',
             'Access-Control-Allow-Headers'  => 'Accept-Ranges,range',
             'Accept-Ranges'                 => 'bytes',
@@ -4246,9 +4311,8 @@ class ReportToController extends Controller
 
     public function InsurancesRenewals_report_export_excel(Request $request)
     {
-        $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date'))->startOfDay() : null;
-        $endDate   = $request->input('end_date')   ? Carbon::parse($request->input('end_date'))->endOfDay()     : null;
-        $branchId  = $request->input('branch_id', null);
+        $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date')) : null;
+        $endDate   = $request->input('end_date')   ? Carbon::parse($request->input('end_date'))   : null;
 
         $validator = Validator::make($request->all(), [
             'start_date' => 'required|date',
@@ -4258,50 +4322,7 @@ class ReportToController extends Controller
             return $this->returnBadRequest($validator->errors(), 'ข้อมูลไม่ครบ');
         }
 
-        $columns = [
-            'inspections.id',
-            'inspections.no',
-            'inspections.date',
-            'inspection_vehicles.license_plate',
-            'inspection_vehicles.id as inspection_vehicle_id',
-            'vechicle_services_transactions.id as vechicle_services_transaction_id',
-            'customers.phone_number1 as customer_phone_number',
-            'insurance_renewal_types.name as insurance_renewal_type_name',
-            'insurances_renewals.id as id_insuran',
-            'insurances_renewals.date_start',
-            'insurances_renewals.date_end',
-            'insurances_renewals.type',
-            'insurances_renewals.amount_paid',
-            'insurances_renewals.policy_number',
-            'insurances_renewals.policy_status',
-            'insurances_renewals.insurance_renewal_type_id',
-            'insurances_renewals.remark',
-            'insurance_names.name', // ชื่อบริษัทประกัน
-        ];
-
-        $q = \App\Models\Inspections::query()
-            ->select($columns)
-            ->leftJoin('inspection_vehicles', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
-            ->leftJoin('customers', 'inspections.customer_id', '=', 'customers.id')
-            ->leftJoin('vechicle_services_transactions', 'inspection_vehicles.id', '=', 'vechicle_services_transactions.inspection_vehicle_id')
-            ->leftJoin('insurances_renewals', 'vechicle_services_transactions.id', '=', 'insurances_renewals.vechicle_services_transaction_id')
-            ->where('service_id', 7)
-            ->leftJoin('insurance_renewal_types', 'insurances_renewals.insurance_renewal_type_id', '=', 'insurance_renewal_types.id')
-            ->leftJoin('insurance_names', 'insurances_renewals.insurance_names_id', '=', 'insurance_names.id')
-            ->whereNull('inspection_vehicles.deleted_at')
-            ->whereNull('vechicle_services_transactions.deleted_at')
-            ->whereNull('insurances_renewals.deleted_at')
-            ->whereNull('insurance_renewal_types.deleted_at')
-            ->whereNull('insurance_names.deleted_at')
-            ->whereNull('customers.deleted_at')
-            ->whereNull('inspections.deleted_at')
-            ->when($branchId, fn($q) => $q->where('inspections.branch_id', $branchId))
-            ->when($startDate && $endDate, fn($q) => $q->whereBetween('inspections.date', [$startDate, $endDate]))
-            ->when($request->filled('insurance_name'), fn($q) => $q->where('insurance_names.name', 'like', '%'.$request->input('insurance_name').'%'))
-            ->orderBy('inspections.no', 'desc')
-            ->distinct();
-
-        $rows = $q->get(); // Illuminate\Support\Collection
+        $rows = $this->buildInsurancesRenewalsReportQuery($request)->get();
 
         return Excel::download(
             new InsurancesRenewalsReportExport($rows, $startDate, $endDate),
@@ -4313,7 +4334,7 @@ class ReportToController extends Controller
     {
         $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date')) : null;
         $endDate   = $request->input('end_date') ? Carbon::parse($request->input('end_date')) : null;
-        $branchId  = $request->input('branch_id', null);
+        $branchId = trim((string) ($request->input('branch_id') ?? ''));
         $columns = [
             'inspections.id',
             'inspections.date',
@@ -4344,8 +4365,10 @@ class ReportToController extends Controller
             ->leftJoin('sub_districts', 'address_ems.subdistrict_id', '=', 'sub_districts.id')
             ->leftJoin('inspection_vehicles', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
             ->leftJoin('vechicle_services_transactions', 'inspection_vehicles.id', '=', 'vechicle_services_transactions.inspection_vehicle_id')
-            ->where('branch_id', $branchId)
             ->where('vechicle_services_transactions.service_id', 16);
+        if ($branchId !== '') {
+            $query->where('inspections.branch_id', $branchId);
+        }
 
         if ($startDate && $endDate) {
             $query->whereBetween('inspections.date', [$startDate, $endDate]);
@@ -4445,7 +4468,7 @@ class ReportToController extends Controller
     {
         $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date'))->startOfDay() : null;
         $endDate   = $request->input('end_date')   ? Carbon::parse($request->input('end_date'))->endOfDay()     : null;
-        $branchId  = $request->input('branch_id', null);
+        $branchId = trim((string) ($request->input('branch_id') ?? ''));
 
         $validator = Validator::make($request->all(), [
             'start_date' => 'required|date',
@@ -4485,8 +4508,10 @@ class ReportToController extends Controller
             ->leftJoin('sub_districts', 'address_ems.subdistrict_id', '=', 'sub_districts.id')
             ->leftJoin('inspection_vehicles', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
             ->leftJoin('vechicle_services_transactions', 'inspection_vehicles.id', '=', 'vechicle_services_transactions.inspection_vehicle_id')
-            ->when($branchId, fn($q) => $q->where('inspections.branch_id', $branchId)) // ระบุ table ให้ชัด
             ->where('vechicle_services_transactions.service_id', 16);
+        if ($branchId !== '') {
+            $query->where('inspections.branch_id', $branchId);
+        }
 
         if ($startDate && $endDate) {
             $query->whereBetween('inspections.date', [$startDate, $endDate]);
@@ -5282,10 +5307,8 @@ class ReportToController extends Controller
 
                 $insuranceName = $insuranceRenewal->insuranceName->name ?? '';
                 $nameWithResname = !empty($insuranceName) ? $serviceName . ' ( ' . $insuranceName  . ' )' : $serviceName;
-                if($serviceId == 14){
-                    $nameWithResname = $serviceName . ' ( ' . $data->remark  . ' )';
-                }elseif($serviceId == 15){
-                    $nameWithResname = $serviceName . ' ( ' . $data->remark_transport  . ' )';
+                if ($serviceId == 14 || $serviceId == 15) {
+                    $nameWithResname = $this->inspectionServiceLineName($transaction, $data);
                 }
 
                 // ตรวจสอบว่าบริการนี้เคยเพิ่มไปแล้วหรือยัง

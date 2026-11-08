@@ -91,7 +91,6 @@
             padding: 4px;
             text-align: center;
             font-size: 18px;
-            ก
         }
 
         th {
@@ -192,8 +191,8 @@
             <td style="width: 40%; border: none; text-align: left; vertical-align: text-top;">
             <p>เลขที่: {{ $WorkOrder->no ?? '-' }}</p>
             <p>วันที่:
-                {{ optional($WorkOrder->date) 
-                    ? \Carbon\Carbon::parse($WorkOrder->date)->locale('th')->addYears(543)->translatedFormat('d F Y') 
+                {{ optional($WorkOrder->date)
+                    ? \Carbon\Carbon::parse($WorkOrder->date)->addYears(543)->format('d/m/Y')
                     : '-' }}
             </p>
             </td>

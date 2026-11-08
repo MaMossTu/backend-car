@@ -2,10 +2,11 @@
     <thead>
         <tr>
             <th style="border: 1px solid black; text-align: center; width: 100px;">วันที่</th>
-            <th style="border: 1px solid black; text-align: center; width: 200px;">รายการ</th>
+            <th style="border: 1px solid black; text-align: center; width: 200px;">บิล</th>
             <th style="border: 1px solid black; text-align: center; width: 100px;">เงินสด</th>
             <th style="border: 1px solid black; text-align: center; width: 100px;">โอน</th>
-            <th style="border: 1px solid black; text-align: center; width: 100px;">ค้างชำระ</th>
+            <th style="border: 1px solid black; text-align: center; width: 100px;">เครดิต</th>
+            <th style="border: 1px solid black; text-align: center; width: 100px;">ลูกหนี้</th>
             <th style="border: 1px solid black; text-align: center; width: 100px;">รายได้รวม</th>
             <th style="border: 1px solid black; text-align: center; width: 100px;">รายจ่าย</th>
             <th style="border: 1px solid black; text-align: center; width: 100px;">คงเหลือ</th>
@@ -14,101 +15,92 @@
     </thead>
     <tbody>
         @php
+            $totalCash = 0;
+            $totalTransfer = 0;
+            $totalCredit = 0;
+            $totalDebt = 0;
+            $totalOverall = 0;
+            $totalCosts = 0;
+            $previousBalance = 0;
+        @endphp
 
-        $dailyTotals = [];
-        foreach ($items as $item) {
-            if ($item->status = 'finish') {
-                $dateKey = $item->date;
-
-                if (!isset($dailyTotals[$dateKey])) {
-                    $dailyTotals[$dateKey] = [
-                        'cash' => 0,
-                        'transfer' => 0,
-                        'credit' => 0,
-                        'debt' => 0,
-                        'total' => 0,
-                    ];
-                }
-                foreach ($item->Installments as $index => $installment) {
-                    if ($installment->paid_type == 'paid_cash') {
-                        $dailyTotals[$dateKey]['cash'] += $installment->paid_price;
-                    } elseif ($installment->paid_type == 'paid_tran') {
-                        $dailyTotals[$dateKey]['transfer'] += $installment->paid_price;
-                    } elseif ($installment->paid_type == 'credit') {
-                        $dailyTotals[$dateKey]['credit'] += $installment->paid_price;
+        @foreach ($items as $item)
+            @if (in_array($item->status, ['finish', 'overdue'], true))
+                @php
+                    $cash = 0;
+                    $transfer = 0;
+                    $credit = 0;
+                    $debt = 0;
+                    $installments = $item->Installments ?? collect();
+                    $installmentCount = $installments->count();
+                    foreach ($installments as $index => $installment) {
+                        if ($installment->paid_type === 'paid_cash') {
+                            $cash += (float) $installment->paid_price;
+                        } elseif ($installment->paid_type === 'paid_tran') {
+                            $transfer += (float) $installment->paid_price;
+                        } elseif ($installment->paid_type === 'credit') {
+                            $credit += (float) $installment->paid_price;
+                        }
+                        if ($index === $installmentCount - 1) {
+                            $debt = (float) ($installment->after_price ?? 0);
+                        }
                     }
-                    if ($index === count($item->Installments) - 1) {
-                        $dailyTotals[$dateKey]['debt'] += $installment->after_price;
-                    }
-                } 
-                $dailyTotals[$dateKey]['total'] += $item->total;
-            }
-        }
+                    $billTotal = (float) ($item->total ?? 0);
+                    $previousBalance += $billTotal;
 
+                    $totalCash += $cash;
+                    $totalTransfer += $transfer;
+                    $totalCredit += $credit;
+                    $totalDebt += $debt;
+                    $totalOverall += $billTotal;
+                @endphp
+                <tr>
+                    <td style="border: 1px solid black; text-align: center;">{{ $item->date }}</td>
+                    <td style="border: 1px solid black; text-align: left;">{{ $item->no }}</td>
+                    <td style="border: 1px solid black; text-align: right;">{{ number_format($cash, 2) }}</td>
+                    <td style="border: 1px solid black; text-align: right;">{{ number_format($transfer, 2) }}</td>
+                    <td style="border: 1px solid black; text-align: right;">{{ number_format($credit, 2) }}</td>
+                    <td style="border: 1px solid black; text-align: right;">{{ number_format($debt, 2) }}</td>
+                    <td style="border: 1px solid black; text-align: right;">{{ number_format($billTotal, 2) }}</td>
+                    <td style="border: 1px solid black; text-align: right;">0.00</td>
+                    <td style="border: 1px solid black; text-align: right;">{{ number_format($previousBalance, 2) }}</td>
+                    <td style="border: 1px solid black;">{{ $item->remark ?? '' }}</td>
+                </tr>
+            @endif
+        @endforeach
 
-        $totalCash = 0;
-        $totalTransfer = 0;
-        $totalCredit = 0;
-        $totalDebt = 0;
-        $totalOverall = 0;
-        $totalCosts = 0;
-        $previousBalance = 0;
-
-        foreach ($dailyTotals as $date => $totals) {
-            $currentBalance = $previousBalance + $totals['total'];
-            echo '
+        @foreach ($costs as $cost)
+            @php
+                $previousBalance -= (float) $cost->price;
+                $totalCosts += (float) $cost->price;
+            @endphp
             <tr>
-                <td style="border: 1px solid black; text-align: center;">' . e($date) . '</td>
-                <td style="border: 1px solid black; text-align: left;">สรุปประจำวัน</td>
-                <td style="border: 1px solid black; text-align: right;">' . ($totals['cash'] > 0 ? number_format($totals['cash'], 2) : '&nbsp;') . '</td>
-                <td style="border: 1px solid black; text-align: right;">' . ($totals['transfer'] > 0 ? number_format($totals['transfer'], 2) : '&nbsp;') . '</td>
-                <td style="border: 1px solid black; text-align: right;">' . ($totals['credit'] > 0 ? number_format($totals['credit'], 2) : '&nbsp;') . '</td>
-                <td style="border: 1px solid black; text-align: right;">' . ($totals['debt'] > 0 ? number_format($totals['debt'], 2) : '&nbsp;') . '</td>
-                <td style="border: 1px solid black; text-align: right;">' . ($totals['total'] > 0 ? number_format($totals['total'], 2) : '&nbsp;') . '</td>
-                <td style="border: 1px solid black; text-align: right;">' . number_format($currentBalance, 2) . '</td>
+                <td style="border: 1px solid black; text-align: center;">{{ $cost->date ?? '' }}</td>
+                <td style="border: 1px solid black; text-align: left;">{{ $cost->name }}</td>
+                <td style="border: 1px solid black; text-align: right;">0.00</td>
+                <td style="border: 1px solid black; text-align: right;">0.00</td>
+                <td style="border: 1px solid black; text-align: right;">0.00</td>
+                <td style="border: 1px solid black; text-align: right;">0.00</td>
+                <td style="border: 1px solid black; text-align: right;">0.00</td>
+                <td style="border: 1px solid black; text-align: right;">{{ number_format($cost->price, 2) }}</td>
+                <td style="border: 1px solid black; text-align: right;">{{ number_format($previousBalance, 2) }}</td>
                 <td style="border: 1px solid black;"></td>
-                <td></td>
-            </tr>';
+            </tr>
+        @endforeach
 
-            $totalCash += $totals['cash'];
-            $totalTransfer += $totals['transfer'];
-            $totalCredit += $totals['credit'];
-            $totalDebt += $totals['debt'];
-            $totalOverall += $totals['total'];
-            $previousBalance = $currentBalance;
-        }
-
-        foreach ($costs as $cost) {
-            $currentBalanceAfterCost = $previousBalance - $cost->price;
-            echo '
-            <tr>
-                <td style="border: 1px solid black;"></td>
-                <td style="border: 1px solid black;" class="text-left">' . e($cost->name) . '</td>
-                <td style="border: 1px solid black;"></td>
-                <td style="border: 1px solid black;"></td>
-                <td style="border: 1px solid black;"></td>
-                <td style="border: 1px solid black;"></td>
-                <td style="border: 1px solid black;"></td>
-                <td style="border: 1px solid black; text-align: right;">' . number_format($cost->price, 2) . '</td>
-                <td style="border: 1px solid black; text-align: right;">' . number_format($currentBalanceAfterCost, 2) . '</td>
-                <td ></td>
-            </tr>';
-            $totalCosts += $cost->price;
-            $previousBalance = $currentBalanceAfterCost;
-        }
-
-        $finalBalance = $totalOverall - $totalCosts;
-        echo '
+        @php
+            $finalBalance = $totalOverall - $totalCosts;
+        @endphp
         <tr>
             <td colspan="2" align="center" style="border: 1px solid black;"><strong>รวม</strong></td>
-            <td style="border: 1px solid black; text-align: right;"><strong>' . number_format($totalCash, 2) . '</strong></td>
-            <td style="border: 1px solid black; text-align: right;"><strong>' . number_format($totalTransfer, 2) . '</strong></td>
-            <td style="border: 1px solid black; text-align: right;"><strong>' . number_format($totalCredit, 2) . '</strong></td>
-            <td style="border: 1px solid black; text-align: right;"><strong>' . number_format($totalDebt, 2) . '</strong></td>
-            <td style="border: 1px solid black; text-align: right;"><strong>' . number_format($totalOverall, 2) . '</strong></td>
-            <td style="border: 1px solid black; text-align: right;"><strong>' . number_format($finalBalance, 2) . '</strong></td>
-            <td style="border: 1px solid black; text-align: right;"></td>
-        </tr>';
-        @endphp
+            <td style="border: 1px solid black; text-align: right;"><strong>{{ number_format($totalCash, 2) }}</strong></td>
+            <td style="border: 1px solid black; text-align: right;"><strong>{{ number_format($totalTransfer, 2) }}</strong></td>
+            <td style="border: 1px solid black; text-align: right;"><strong>{{ number_format($totalCredit, 2) }}</strong></td>
+            <td style="border: 1px solid black; text-align: right;"><strong>{{ number_format($totalDebt, 2) }}</strong></td>
+            <td style="border: 1px solid black; text-align: right;"><strong>{{ number_format($totalOverall, 2) }}</strong></td>
+            <td style="border: 1px solid black; text-align: right;"><strong>{{ number_format($totalCosts, 2) }}</strong></td>
+            <td style="border: 1px solid black; text-align: right;"><strong>{{ number_format($finalBalance, 2) }}</strong></td>
+            <td style="border: 1px solid black;"></td>
+        </tr>
     </tbody>
 </table>

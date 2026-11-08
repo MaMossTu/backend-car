@@ -8,6 +8,20 @@ use Illuminate\Support\Facades\DB;
 
 class DistrictsController extends Controller
 {
+    private function applyNameThPrefix(Districts $item): void
+    {
+        $name = $item->name_th ?? '';
+        if ($name === '') {
+            return;
+        }
+        if (preg_match('/^(เขต|อ\.)/u', $name)) {
+            $item->name_th_prefix = $name;
+
+            return;
+        }
+        $provinceId = (int) $item->province_id;
+        $item->name_th_prefix = ($provinceId === 1 ? 'เขต' : 'อ.') . $name;
+    }
 
     public function index()
     {
@@ -38,6 +52,7 @@ class DistrictsController extends Controller
             $Item->province_id = $request->province_id;
             $Item->name_th = $request->name_th;
             $Item->name_en = $request->name_en;
+            $this->applyNameThPrefix($Item);
             $Item->save();
 
             DB::commit();
@@ -68,6 +83,7 @@ class DistrictsController extends Controller
             $item->province_id = $request->input('province_id');
             $item->name_th = $request->input('name_th');
             $item->name_en = $request->input('name_en');
+            $this->applyNameThPrefix($item);
             $item->save();
             DB::commit();
 
@@ -138,7 +154,7 @@ class DistrictsController extends Controller
             'name_th',
             'name_en',
         ];
-        $query = Districts::select($columns);
+        $query = Districts::select($columns)->with('Provinces');
 
         if ($provinceId !== null && $provinceId !== '') {
             $query->where('province_id', $provinceId);

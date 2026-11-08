@@ -17,12 +17,48 @@ class VehiclesController extends Controller
      */
     public function index()
     {
-        $car = Vehicles::with('VehicleInspectionTypes')
-            ->with('InsuranceTypes')
-            ->with('VehicleGas')
-            ->with('Provinces')
-            ->get();
-        return $car;
+        try {
+            // ใช้โหลดเบา — หน้าสร้างบิล/autocomplete ต้องการแค่ฟิลด์หลัก (เดิม eager load ทั้ง VehicleGas ทุกคันทำให้ 500/timeout)
+            return Vehicles::query()
+                ->select([
+                    'id',
+                    'customer_id',
+                    'license_plate',
+                    'province_id',
+                    'registration_date',
+                    'vehicle_inspection_types_id',
+                    'insurance_types_id',
+                    'brand_id',
+                    'model_id',
+                    'chassis_number',
+                    'engine_number',
+                    'fuel_type',
+                    'fuel',
+                    'cc',
+                    'weight',
+                    'weight_loaded',
+                    'seat_count',
+                    'description',
+                    'notificate_tax',
+                    'tax_renewal_date',
+                    'mileage',
+                    'is_corporate',
+                ])
+                ->whereNotNull('license_plate')
+                ->where('license_plate', '!=', '')
+                ->orderBy('license_plate')
+                ->get()
+                ->each(function (Vehicles $vehicle) {
+                    $vehicle->setAppends([]);
+                    $vehicle->makeHidden(['file']);
+                });
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'ไม่สามารถโหลดรายการรถได้',
+            ], 500);
+        }
     }
 
     /**
@@ -140,7 +176,7 @@ class VehiclesController extends Controller
     public function showID($id)
     {
         $Vehicles = Vehicles::where('id', $id)
-            ->with('Customers')
+            ->with('customers')
             ->with('VehicleInspectionTypes')
             ->with('InsuranceTypes')
             ->with('VehicleGas')

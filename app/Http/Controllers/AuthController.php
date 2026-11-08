@@ -59,7 +59,7 @@ class AuthController extends Controller
         }
 
         $user = auth()->user();
-        $user->load(['Employees', 'UserPosition']);
+        $user->load(['Employees.Branches', 'UserPosition']);
 
         $userPosition = $user->UserPosition->first();
         $perid = $userPosition ? $userPosition->role_id : null;

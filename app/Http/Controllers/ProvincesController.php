@@ -8,6 +8,15 @@ use Illuminate\Support\Facades\DB;
 
 class ProvincesController extends Controller
 {
+    private function applyNameThPrefix(Provinces $item): void
+    {
+        $name = $item->name_th ?? '';
+        if ($name === '') {
+            return;
+        }
+        $item->name_th_prefix = preg_match('/^จ\./u', $name) ? $name : 'จ.' . $name;
+    }
+
     /**
      * Display a listing of the resource.
      */
@@ -39,6 +48,7 @@ class ProvincesController extends Controller
             $Item = new Provinces();
             $Item->name_th = $request->name_th;
             $Item->name_en = $request->name_en;
+            $this->applyNameThPrefix($Item);
             $Item->save();
 
             DB::commit();
@@ -71,6 +81,7 @@ class ProvincesController extends Controller
             $item = Provinces::where('id', $id)->first();
             $item->name_th = $request->input('name_th');
             $item->name_en = $request->input('name_en');
+            $this->applyNameThPrefix($item);
             $item->save();
 
             DB::commit();

@@ -44,7 +44,8 @@ class BillingController extends Controller
 
         $validator = Validator::make(request()->all(), [
             'branche_id'                    => 'required|integer',
-            'customer_id'                   => 'required|integer',
+            'customer_id'                   => 'nullable|integer',
+            'date'                          => 'required|date',
             'billing_invoices'              => 'required|array|min:1',
             'billing_invoices.*.invoice_id' => 'required|integer',
         ]);
@@ -53,13 +54,20 @@ class BillingController extends Controller
             return response()->json(['message' => 'ข้อมูลไม่ครบหรือไม่ถูกต้อง', 'errors' => $validator->errors()], 400);
         }
 
+        $resolved = $this->resolveBillingCustomerFromInvoices($request);
+        if (! $resolved['ok']) {
+            return $this->returnErrorData($resolved['message'], 400);
+        }
+
         DB::beginTransaction();
         try {
 
-            $customer = Customers::where('id', $request->customer_id)
+            $customer = Customers::where('id', $resolved['customer_id'])
                 ->with('Customer_Addresses', 'Customer_Addresses.provinces', 'Customer_Addresses.districts', 'Customer_Addresses.SubDistricts')
                 ->first();
             if (! $customer) {
+                DB::rollBack();
+
                 return $this->returnErrorData('ไม่พบข้อมูลลูกค้า', 404);
             }
 
@@ -83,8 +91,8 @@ class BillingController extends Controller
             $billing             = new Billing();
             $billing->branche_id = $request->branche_id;
 
-            $billing->customer_no             = $customer->no;
-            $billing->customer_name           = $customer->name . (isset($customer->lname) ? ' ' . $customer->lname : '');
+            $billing->customer_no             = $customer->no ?? '';
+            $billing->customer_name           = trim(($customer->name ?? '') . ' ' . ($customer->lname ?? ''));
             $billing->customer_address        = $address ?? '';
             $billing->customer_address2       = ($subdistrictName ?? '') . ' ' . ($districtName ?? '') . ' ' . ($provinceName ?? '') . ' ' . ($postalcode ?? '');
             $billing->customer_phone          = $customer->phone_number1 ?? '';
@@ -94,7 +102,7 @@ class BillingController extends Controller
 
             $year  = date('y') + 43; // เลขท้ายปีพ.ศ.
             $month = date('m');      // เดือนปัจจุบัน
-            $count = billing::whereYear('date', date('Y'))
+            $count = Billing::whereYear('date', date('Y'))
                 ->where('branche_id', $request->branche_id)
                 ->whereMonth('date', date('m'))
                 ->whereRaw("no REGEXP '^BI" . $year . $month . "/[0-9]{3}$'")
@@ -105,14 +113,18 @@ class BillingController extends Controller
             $billing->date      = $request->date;
             $billing->remark    = $request->remark;
             $billing->condition = $request->condition;
-            $billing->withholding_tax = $request->withholding_tax;
-            $billing->total = $request->total;
+            $billing->withholding_tax = in_array($request->withholding_tax, ['Y', 'N'], true)
+                ? $request->withholding_tax
+                : 'N';
+            $billing->total = $request->input('total', 0) ?? 0;
 
             $billing->save();
 
             foreach ($request->billing_invoices as $invoice_data) {
-                $invoice = Invoice::where('id', $invoice_data['invoice_id'])->with('invoicePayment')->first();
+                $invoice = $resolved['invoices']->get($invoice_data['invoice_id']);
                 if (! $invoice) {
+                    DB::rollBack();
+
                     return $this->returnErrorData('ไม่พบข้อมูลใบแจ้งหนี้', 404);
                 }
 
@@ -135,7 +147,7 @@ class BillingController extends Controller
             // Log
             $userId      = $loginBy->id;
             $type        = 'เพิ่มข้อมูล ใบวางบิล';
-            $description = 'ผู้ใช้งาน ' . $loginBy->name . ' ได้ทำการ ' . $type . ' id ' . $invoice->id;
+            $description = 'ผู้ใช้งาน ' . $loginBy->name . ' ได้ทำการ ' . $type . ' id ' . $billing->id;
             $this->Log($userId, $description, $type);
 
             DB::commit();
@@ -144,6 +156,67 @@ class BillingController extends Controller
             DB::rollback();
             return $this->returnErrorData('เกิดข้อผิดพลาดในระบบ: ' . $e->getMessage(), 404);
         }
+    }
+
+    /**
+     * ใบแจ้งหนี้ที่ยังไม่ถูกผูกกับใบวางบิลที่ยังไม่ยกเลิก
+     */
+    public function index_for_billing()
+    {
+        $invoices = Invoice::where('status', '!=', 'cancel')
+            ->whereDoesntHave('billingInvoice', function ($query) {
+                $query->whereHas('billing', function ($billingQuery) {
+                    $billingQuery->where('status', '!=', 'cancel');
+                });
+            })
+            ->orderBy('id', 'desc')
+            ->get();
+
+        return $this->returnSuccess('Success', $invoices);
+    }
+
+    /**
+     * @return array{ok: bool, message?: string, customer_id?: int, invoices?: \Illuminate\Support\Collection}
+     */
+    private function resolveBillingCustomerFromInvoices(Request $request): array
+    {
+        $invoiceIds = collect($request->input('billing_invoices', []))
+            ->pluck('invoice_id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($invoiceIds->isEmpty()) {
+            return ['ok' => false, 'message' => 'กรุณาเลือกใบแจ้งหนี้อย่างน้อย 1 รายการ'];
+        }
+
+        $invoices = Invoice::whereIn('id', $invoiceIds)->get();
+        if ($invoices->count() !== $invoiceIds->count()) {
+            return ['ok' => false, 'message' => 'ไม่พบข้อมูลใบแจ้งหนี้บางรายการ'];
+        }
+
+        $customerIds = $invoices->pluck('customer_id')->filter()->unique();
+        if ($customerIds->count() > 1) {
+            return ['ok' => false, 'message' => 'ใบแจ้งหนี้ที่เลือกต้องเป็นของลูกค้าเดียวกัน'];
+        }
+
+        $fromInvoices = $customerIds->first();
+        $requested    = $request->input('customer_id');
+
+        if ($requested && $fromInvoices && (int) $requested !== (int) $fromInvoices) {
+            return ['ok' => false, 'message' => 'ลูกค้าที่เลือกไม่ตรงกับใบแจ้งหนี้'];
+        }
+
+        $customerId = $requested ?: $fromInvoices;
+        if (! $customerId) {
+            return ['ok' => false, 'message' => 'ไม่พบข้อมูลลูกค้าจากใบแจ้งหนี้'];
+        }
+
+        return [
+            'ok'          => true,
+            'customer_id' => (int) $customerId,
+            'invoices'    => $invoices->keyBy('id'),
+        ];
     }
 
     /**
@@ -182,13 +255,19 @@ class BillingController extends Controller
 
         $validator = Validator::make(request()->all(), [
             'branche_id'                    => 'required|integer',
-            'customer_id'                   => 'required|integer',
+            'customer_id'                   => 'nullable|integer',
+            'date'                          => 'required|date',
             'billing_invoices'              => 'required|array|min:1',
             'billing_invoices.*.invoice_id' => 'required|integer',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['message' => 'ข้อมูลไม่ครบหรือไม่ถูกต้อง', 'errors' => $validator->errors()], 400);
+        }
+
+        $resolved = $this->resolveBillingCustomerFromInvoices($request);
+        if (! $resolved['ok']) {
+            return $this->returnErrorData($resolved['message'], 400);
         }
 
         DB::beginTransaction();
@@ -201,10 +280,12 @@ class BillingController extends Controller
             $billing->status = 'cancel';
             $billing->save();
 
-            $customer = Customers::where('id', $request->customer_id)
+            $customer = Customers::where('id', $resolved['customer_id'])
                 ->with('Customer_Addresses', 'Customer_Addresses.provinces', 'Customer_Addresses.districts', 'Customer_Addresses.SubDistricts')
                 ->first();
             if (! $customer) {
+                DB::rollBack();
+
                 return $this->returnErrorData('ไม่พบข้อมูลลูกค้า', 404);
             }
 
@@ -245,8 +326,8 @@ class BillingController extends Controller
 
             $newBilling                          = new Billing();
             $newBilling->branche_id              = $request->branche_id;
-            $newBilling->customer_no             = $customer->no;
-            $newBilling->customer_name           = $customer->name;
+            $newBilling->customer_no             = $customer->no ?? '';
+            $newBilling->customer_name           = trim(($customer->name ?? '') . ' ' . ($customer->lname ?? ''));
             $newBilling->customer_address        = $address ?? '';
             $newBilling->customer_address2       = ($subdistrictName ?? '') . ' ' . ($districtName ?? '') . ' ' . ($provinceName ?? '') . ' ' . ($postalcode ?? '');
             $newBilling->customer_phone          = $customer->phone_number1 ?? '';
@@ -262,8 +343,10 @@ class BillingController extends Controller
             $newBilling->save();
 
             foreach ($request->billing_invoices as $invoice_data) {
-                $invoice = Invoice::where('id', $invoice_data['invoice_id'])->with('invoicePayment')->first();
+                $invoice = $resolved['invoices']->get($invoice_data['invoice_id']);
                 if (! $invoice) {
+                    DB::rollBack();
+
                     return $this->returnErrorData('ไม่พบข้อมูลใบแจ้งหนี้', 404);
                 }
 
@@ -475,14 +558,14 @@ class BillingController extends Controller
             $branche_open_date_time = $branche->open_close_time ?? null;
             $branche_open_date      = $branche->open_date ?? null;
             $branche_phone          = $branche->phone ?? null;
-            $branche_image          = $branche->logo ?? null;
+            $branche_image          = $this->branchStoredLogoUrl($branche->logo ?? null);
         } else {
             $branche_Name           = $Billing->Branches->business_name ?? null;
             $branche_address        = $Billing->Branches->address ?? null;
             $branche_open_date_time = $Billing->Branches->open_close_time ?? null;
             $branche_open_date      = $Billing->Branches->open_date ?? null;
             $branche_phone          = $Billing->Branches->phone ?? null;
-            $branche_image          = $Billing->Branches->logo ?? null;
+            $branche_image          = $this->branchStoredLogoUrl($Billing->Branches->logo ?? null);
         }
 
         if (! $Billing->billingInvoice || $Billing->billingInvoice->isEmpty()) {

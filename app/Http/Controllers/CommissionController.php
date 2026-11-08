@@ -12,6 +12,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Response;
 use Mpdf\Mpdf;
 use Illuminate\Support\Facades\DB;
+use Maatwebsite\Excel\Facades\Excel;
+use App\Export\CommissionCommissExport;
 
 class CommissionController extends Controller
 {
@@ -285,7 +287,7 @@ class CommissionController extends Controller
                 ];
 
                 foreach ($item->inspections as $inspection) {
-                    foreach ($inspection->inspectionVehicles as $vehicle) {
+                    foreach ($inspection->InspectionVehicles as $vehicle) {
                         foreach ($vehicle->vehicleServiceTransaction as $transaction) {
                             $originalName = $transaction->service->name ?? 'ไม่ทราบ';
                             $serviceKey = $serviceMapping[$originalName] ?? 'unknown';
@@ -305,25 +307,9 @@ class CommissionController extends Controller
 
         return $this->returnSuccess('เรียกดูข้อมูลสำเร็จ', $items);
     }
-    public function commissPDF(Request $request)
+    private function commissionThaiServiceHeaders(): array
     {
-        $branchId = trim($request->input('branch_id', null));
-
-        $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date')) : null;
-        $endDate = $request->input('end_date') ? Carbon::parse($request->input('end_date')) : null;
-
-        $query = Employees::query()
-            ->with('inspections', function ($q) use ($startDate, $endDate) {
-                $q->whereBetween('date', [$startDate, $endDate])->with('inspectionVehicles.vehicleServiceTransaction');
-            });
-
-        if (!is_null($branchId) && $branchId !== '') {
-            $query->where('branch_id', $branchId);
-        }
-
-        $employees = $query->get();
-
-        $serviceMapping = [
+        return [
             'ตรวจสภาพรถ',
             'พ.ร.บ.',
             'ภาษีประจำปี',
@@ -341,35 +327,81 @@ class CommissionController extends Controller
             'อื่นๆ',
             'EMS',
         ];
+    }
 
+    private function employeesForCommissionReport(Request $request)
+    {
+        $branchId = trim((string) $request->input('branch_id', ''));
+        $startDate = $request->input('start_date') ? Carbon::parse($request->input('start_date')) : null;
+        $endDate = $request->input('end_date') ? Carbon::parse($request->input('end_date')) : null;
+
+        $query = Employees::query()
+            ->with([
+                'inspections' => function ($q) use ($startDate, $endDate) {
+                    if ($startDate && $endDate) {
+                        $q->whereBetween('date', [$startDate, $endDate]);
+                    }
+                    $q->with(['InspectionVehicles.vehicleServiceTransaction.service']);
+                },
+            ]);
+
+        if ($branchId !== '') {
+            $query->where('branch_id', $branchId);
+        }
+
+        return $query->get();
+    }
+
+    private function buildCommissionReportRows($employees): array
+    {
+        $serviceNames = $this->commissionThaiServiceHeaders();
         $data = [];
-        $serviceNames = array_values($serviceMapping);
 
         foreach ($employees as $item) {
-            // Initialize the service counts for each employee
             $serviceCounts = array_fill_keys($serviceNames, 0);
 
             foreach ($item->inspections as $inspection) {
-                foreach ($inspection->inspectionVehicles as $vehicle) {
+                foreach ($inspection->InspectionVehicles as $vehicle) {
                     foreach ($vehicle->vehicleServiceTransaction as $transaction) {
-                        $originalName = $transaction->service->name ?? 'ไม่ทราบ';
-
-                        // Find the corresponding service name key
-                        $serviceKey = in_array($originalName, $serviceNames) ? $originalName : 'ไม่ทราบ';
-
-                        // Increment the service count for this service
-                        $serviceCounts[$serviceKey]++;
+                        $originalName = $transaction->service->name ?? null;
+                        if ($originalName !== null && isset($serviceCounts[$originalName])) {
+                            $serviceCounts[$originalName]++;
+                        }
                     }
                 }
             }
 
             $data[] = [
-                'name' => $item->first_name . ' ' . $item->last_name,
+                'first_name' => $item->first_name,
+                'last_name' => $item->last_name,
                 'email' => $item->email,
                 'phone_number' => $item->phone_number,
                 'services' => $serviceCounts,
             ];
         }
+
+        return [$data, $serviceNames];
+    }
+
+    public function commissExcel(Request $request)
+    {
+        $employees = $this->employeesForCommissionReport($request);
+        [$data, $serviceNames] = $this->buildCommissionReportRows($employees);
+
+        try {
+            return Excel::download(
+                new CommissionCommissExport($data, $serviceNames),
+                'CommissionReport.xlsx'
+            );
+        } catch (\Throwable $e) {
+            return $this->returnBadRequest($e->getMessage(), 'Error downloading file');
+        }
+    }
+
+    public function commissPDF(Request $request)
+    {
+        $employees = $this->employeesForCommissionReport($request);
+        [$data, $serviceNames] = $this->buildCommissionReportRows($employees);
 
         // PDF configuration and creation
         $defaultConfig = (new \Mpdf\Config\ConfigVariables())->getDefaults();
@@ -442,8 +474,8 @@ class CommissionController extends Controller
         foreach ($data as $index => $employeeData) {
             $html .= '<tr>';
             $html .= '<td>' . ($index + 1) . '</td>';
-            $html .= '<td>' . $employeeData['name'] . '</td>';
-            $html .= '<td>' . $employeeData['name'] . '</td>';
+            $html .= '<td>' . $employeeData['first_name'] . '</td>';
+            $html .= '<td>' . $employeeData['last_name'] . '</td>';
             $html .= '<td>' . $employeeData['email'] . '</td>';
             $html .= '<td>' . $employeeData['phone_number'] . '</td>';
 

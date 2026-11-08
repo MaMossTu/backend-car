@@ -11,6 +11,7 @@ use App\Export\DailyReportExport;
 use App\Export\DayExport;
 use App\Export\ExpenseExport;
 use App\Export\ExpenseReportExport;
+use App\Export\ExtentCustomerExport;
 use App\Export\GasCheckExport;
 use App\Export\Gasreport;
 use App\Export\InsuranceExport;
@@ -53,18 +54,20 @@ class ReportController extends Controller
 {
     public function reportExportPDFday(Request $request)
     {
-        $branchId     = $request->input('branch_id', null);
-        $selectedDate = $request->input('date');
+        $branchId = $request->input('branch_id', null);
+        $startRaw = $request->input('start_date') ?: $request->input('date');
+        $endRaw   = $request->input('end_date') ?: $startRaw;
 
-        if (! $selectedDate) {
+        if (! $startRaw) {
             return $this->returnError('Date parameter is missing');
         }
 
-        $selectedDate = Carbon::parse($selectedDate)->toDateString();
+        $startDate = Carbon::parse($startRaw)->toDateString();
+        $endDate   = Carbon::parse($endRaw)->toDateString();
 
         $employeeIds = Employees::where('branch_id', $branchId)->pluck('id');
 
-        $query = Inspections::whereDate('inspections.date', $selectedDate);
+        $query = Inspections::whereBetween('inspections.date', [$startDate, $endDate]);
 
         if ($employeeIds->isNotEmpty()) {
             $query->whereIn('inspections.employee_id', $employeeIds);
@@ -127,42 +130,46 @@ class ReportController extends Controller
                     <th>หมายเหตุ</th>
                 </tr>';
 
-        $lastDate = null;
-        $lastNo   = null;
-
         foreach ($items as $item) {
-            if ($item->status = 'finish' || $item->status = 'overdue') {
-                $installments = Installment::where('inspection_id', $item->id)->get();
+            if (! in_array($item->status, ['finish', 'overdue'], true)) {
+                continue;
+            }
 
-                foreach ($installments as $index => $installment) {
-                    $cash     = ($installment->paid_type == 'paid_cash') ? $installment->paid_price : 0;
-                    $transfer = ($installment->paid_type == 'paid_tran') ? $installment->paid_price : 0;
-                    $credit   = ($installment->paid_type == 'credit') ? $installment->paid_price : 0;
-                    $debt     = $installment->after_price ?? 0;
+            $installments = Installment::where('inspection_id', $item->id)->orderBy('id')->get();
+            $cash         = 0;
+            $transfer     = 0;
+            $credit       = 0;
+            $debt         = 0;
+            $lastIndex    = $installments->count() - 1;
 
-                    $totalCash += $cash;
-                    $totalTransfer += $transfer;
-                    $totalCredito += $credit;
-                    $totalDebt += $debt;
+            foreach ($installments as $index => $installment) {
+                if ($installment->paid_type == 'paid_cash') {
+                    $cash += (float) $installment->paid_price;
+                } elseif ($installment->paid_type == 'paid_tran') {
+                    $transfer += (float) $installment->paid_price;
+                } elseif ($installment->paid_type == 'credit') {
+                    $credit += (float) $installment->paid_price;
+                }
+                if ($index === $lastIndex) {
+                    $debt = (float) ($installment->after_price ?? 0);
+                }
+            }
 
-                    // แสดงวันที่เฉพาะเมื่อ $item->no เปลี่ยนไป
-                    $dateColumn = ($lastNo !== $item->no) ? '<td align="center">' . $item->date . '</td>' : '<td></td>';
-                    $noColumn   = ($lastNo !== $item->no) ? '<td align="center">' . $item->no . '</td>' : '<td></td>';
-                    // อัปเดตค่า $lastNo
-                    $lastNo = $item->no;
+            $totalCash += $cash;
+            $totalTransfer += $transfer;
+            $totalCredito += $credit;
+            $totalDebt += $debt;
 
-                    $html .= '
+            $html .= '
                             <tr>
-                                ' . $dateColumn . '
-                                ' . $noColumn . '
+                                <td align="center">' . $item->date . '</td>
+                                <td align="center">' . $item->no . '</td>
                                 <td align="center">' . number_format($cash, 2) . '</td>
                                 <td align="center">' . number_format($transfer, 2) . '</td>
                                 <td align="center">' . number_format($credit, 2) . '</td>
                                 <td align="center">' . number_format($debt, 2) . '</td>
-                                <td>' . $item->remark . '</td>
+                                <td>' . e($item->remark ?? '') . '</td>
                             </tr>';
-                }
-            }
         }
 
         $html .= '
@@ -262,32 +269,34 @@ class ReportController extends Controller
 
         $dailyTotals = [];
         foreach ($items as $item) {
-            if ($item->status = 'finish') {
-                $dateKey = $item->date;
-
-                if (! isset($dailyTotals[$dateKey])) {
-                    $dailyTotals[$dateKey] = [
-                        'cash'     => 0,
-                        'transfer' => 0,
-                        'credit'   => 0,
-                        'debt'     => 0,
-                        'total'    => 0,
-                    ];
-                }
-                foreach ($item->Installments as $index => $installment) {
-                    if ($installment->paid_type == 'paid_cash') {
-                        $dailyTotals[$dateKey]['cash'] += $installment->paid_price;
-                    } elseif ($installment->paid_type == 'paid_tran') {
-                        $dailyTotals[$dateKey]['transfer'] += $installment->paid_price;
-                    } elseif ($installment->paid_type == 'credit') {
-                        $dailyTotals[$dateKey]['credit'] += $installment->paid_price;
-                    }
-                    if ($index === count($item->Installments) - 1) {
-                        $dailyTotals[$dateKey]['debt'] += $installment->after_price;
-                    }
-                }
-                $dailyTotals[$dateKey]['total'] += $item->total;
+            if (! in_array($item->status, ['finish', 'overdue'], true)) {
+                continue;
             }
+
+            $dateKey = $item->date;
+
+            if (! isset($dailyTotals[$dateKey])) {
+                $dailyTotals[$dateKey] = [
+                    'cash'     => 0,
+                    'transfer' => 0,
+                    'credit'   => 0,
+                    'debt'     => 0,
+                    'total'    => 0,
+                ];
+            }
+            foreach ($item->Installments as $index => $installment) {
+                if ($installment->paid_type == 'paid_cash') {
+                    $dailyTotals[$dateKey]['cash'] += $installment->paid_price;
+                } elseif ($installment->paid_type == 'paid_tran') {
+                    $dailyTotals[$dateKey]['transfer'] += $installment->paid_price;
+                } elseif ($installment->paid_type == 'credit') {
+                    $dailyTotals[$dateKey]['credit'] += $installment->paid_price;
+                }
+                if ($index === count($item->Installments) - 1) {
+                    $dailyTotals[$dateKey]['debt'] += $installment->after_price;
+                }
+            }
+            $dailyTotals[$dateKey]['total'] += $item->total;
         }
 
         $html = '
@@ -615,13 +624,11 @@ class ReportController extends Controller
             return $this->returnBadRequest($validator->errors(), 'ข้อมูลไม่ครบ');
         }
 
-        $branchId = trim($request->input('branch_id', null));
+        $branchId = $request->input('branch_id', null);
 
-        $query = Cost::select('date', 'name', 'price', 'detail')
-            ->when($branchId, function ($query) use ($branchId) {
-                $query->where('branch_id', $branchId);
-            })
-            ->when($startDate && $endDate, function ($query) use ($startDate, $endDate) {
+        $query = Cost::select('date', 'name', 'price', 'detail');
+        $this->applyCostBranchFilter($query, $branchId);
+        $query->when($startDate && $endDate, function ($query) use ($startDate, $endDate) {
                 $query->whereBetween('date', [$startDate, $endDate]);
             });
 
@@ -1449,58 +1456,16 @@ class ReportController extends Controller
         }
 
         $branchId = $request->input('branch_id', null);
+        $startDate = $startDate ? $startDate->copy()->startOfDay() : null;
+        $endDate   = $endDate ? $endDate->copy()->endOfDay() : null;
 
-        // Step 1: Get employees in the specified branch
-        $employeeIds = Employees::where('branch_id', $branchId)->pluck('id');
+        $taxVehicle = ($request->has('tax_vehicle') && $request->input('tax_vehicle') !== null)
+            ? $request->input('tax_vehicle')
+            : null;
 
-        // Step 2: Query inspections related to those employees
-        $query = Inspections::select(
-            'inspections.no',
-            'inspections.date',
-            'inspections.total',
-            'inspections.paytrue',
-            'inspections.tax_vehicle',
-            'inspections.remark',
-            'inspection_vehicles.license_plate',
-            'inspection_vehicles.provinces',
-            'inspection_vehicles.name AS customer_name',
-            'inspection_vehicles.phone_number',
-            'inspection_vehicles.registration_date',
-            'vehicleserviceTransactions.service_price',
-            'vehicle_brands.name'
-        )
-            ->leftJoin('inspection_vehicles', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
-            ->leftJoin('vechicle_services_transactions as vehicleserviceTransactions', 'inspection_vehicles.id', '=', 'vehicleserviceTransactions.inspection_vehicle_id')
-            ->leftJoin('vehicles', 'inspection_vehicles.vehicle_id', '=', 'vehicles.id')
-            ->leftJoin('vehicle_brands', 'vehicles.brand_id', '=', 'vehicle_brands.id')
-            ->when($employeeIds->isNotEmpty(), function ($query) use ($employeeIds) {
-                return $query->whereIn('inspections.employee_id', $employeeIds);
-            })
-            ->where('vehicleserviceTransactions.service_id', 3)
-            ->when($request->has('tax_vehicle') && $request->input('tax_vehicle') !== null, function ($query) use ($request) {
-                return $query->where('inspections.tax_vehicle', $request->input('tax_vehicle'));
-            })
-        // ถ้ามีการค้นหาตามวันที่ให้เพิ่มเงื่อนไขตามวันที่
-            ->when($startDate && $endDate, function ($query) use ($startDate, $endDate) {
-                return $query->whereBetween('inspections.date', [$startDate, $endDate]);
-            })
-        // สั่งการดึงข้อมูลที่เก่าก่อน
-            ->orderBy('inspections.date', 'asc');
-        // return $query;
-        // Adjust branch filtering according to your schema
-        if ($branchId) {
-            // Assuming employees have a relation to inspections
-            $query->whereHas('employees', function ($query) use ($branchId) {
-                $query->where('branch_id', $branchId);
-            });
-        }
-
-        if ($startDate && $endDate) {
-            $query->whereBetween('inspections.date', [$startDate, $endDate]);
-        }
-
-        $inspections = $query->get();
-        // return $inspections;
+        $inspections = $this->enrichCarTaxMainReportRows(
+            $this->buildCarTaxReportInspectionQuery($startDate, $endDate, $branchId, $taxVehicle)->get()
+        );
 
         $html = '
         <style>
@@ -1522,7 +1487,7 @@ class ReportController extends Controller
                     </td>
                 </tr>
                 <tr>
-                    <th style="width:12%;">วันที่จดทะเบียน</th>
+                    <th style="width:12%;">วันที่ยื่นภาษี</th>
                     <th style="width:8%;">ลำดับ</th>
                     <th style="width:10%;">เลขที่</th>
                     <th style="width:10%;">ทะเบียน</th>
@@ -1539,82 +1504,25 @@ class ReportController extends Controller
         if ($inspections->isEmpty()) {
             $html .= '<tr><td colspan="11" class="no-data">ไม่มีรายการ</td></tr>';
         } else {
-            $index    = 1;
-            $lastDate = null; // ตัวแปรเพื่อเก็บวันที่ล่าสุดที่แสดง
-
+            $index = 1;
             foreach ($inspections as $inspection) {
-                // ตรวจสอบว่าเป็นวันที่ใหม่หรือไม่
-                if ($inspection->date != $lastDate) {
-                    // $index = 1;
-                                                   // ถ้าเป็นวันที่ใหม่ เราจะนับลำดับใหม่และแสดงวันที่
-                    $lastDate = $inspection->date; // เก็บวันที่ล่าสุดที่แสดง
-                                                   // แสดงวันที่ในคอลัมน์แรกของแถวแรก
-                    $html .= '
+                $rowDate = $inspection->tax_renewal_date
+                    ? $this->convertDateFormat($inspection->tax_renewal_date)
+                    : '-';
+                $html .= '
                     <tr>
-                        <td>' . $this->convertDateFormat($inspection->date) . '</td> <!-- แสดงวันที่ในคอลัมน์แรก -->
+                        <td>' . $rowDate . '</td>
                         <td>' . $index++ . '</td>
-                        <td>' . ($inspection->no ?? '-') . '</td>
-                        <td>' . ($inspection->license_plate ?? '-') . '</td>
-                        <td>' . ($inspection->phone_number ?? '-') . '</td>
-                        <td>' . ($inspection->name ?? '-') . '</td>
-                        <td>' . ($inspection->service_price ?? '-') . '</td>
-                        <td>' . ($inspection->paytrue ?? '-') . '</td>';
-                    if ($inspection->paytrue !== 0 && $inspection->paytrue !== null) {
-                        if ($inspection->service_price > $inspection->paytrue) {
-                            $price = $inspection->service_price - $inspection->paytrue;
-                            $html .= '
-                                <td>' . ($price == 0 ? '-' : $price) . '</td> <!-- Replace with actual value -->
-                                <td>-</td> <!-- Replace with actual value -->';
-                        } else {
-                            $price = $inspection->paytrue - $inspection->service_price;
-                            $html .= '
-                                <td>-</td> <!-- Replace with actual value -->
-                                <td>' . ($price == 0 ? '-' : $price) . '</td> <!-- Replace with actual remark if available -->';
-                        }
-                    } else {
-                        // If paytrue is 0 or null, do not perform calculation
-                        $html .= '
-                            <td>-</td> <!-- Replace with actual value for empty paytrue -->
-                            <td>-</td> <!-- Replace with actual remark if available -->';
-                    }
-                    $html .= '
-                        <td>' . ($inspection->remark ?? '-') . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->no ?? null) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->license_plate ?? null) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->phone_number ?? null) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->brand_name ?? null) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->billed ?? null, true) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->paytrue ?? null, true) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->refund ?? null, true) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->extra ?? null, true) . '</td>
+                        <td>' . $this->formatCarTaxReportCell($inspection->remark ?? null) . '</td>
                     </tr>';
-                } else {
-                    // ถ้าไม่ใช่วันที่ใหม่ ให้แสดงลำดับโดยไม่แสดงวันที่
-                    $html .= '
-                    <tr>
-                        <td></td> <!-- คอลัมน์แรกจะเว้นว่างไว้ -->
-                        <td>' . $index++ . '</td>
-                        <td>' . ($inspection->no ?? '-') . '</td>
-                        <td>' . ($inspection->license_plate ?? '-') . '</td>
-                        <td>' . ($inspection->phone_number ?? '-') . '</td>
-                        <td>' . ($inspection->name ?? '-') . '</td>
-                        <td>' . ($inspection->service_price ?? '-') . '</td>
-                        <td>' . ($inspection->paytrue ?? '-') . '</td>';
-                    if ($inspection->paytrue !== 0 && $inspection->paytrue !== null) {
-                        if ($inspection->service_price > $inspection->paytrue) {
-                            $price = $inspection->service_price - $inspection->paytrue;
-                            $html .= '
-                                <td>' . ($price == 0 ? '-' : $price) . '</td> <!-- Replace with actual value -->
-                                <td>-</td> <!-- Replace with actual value -->';
-                        } else {
-                            $price = $inspection->paytrue - $inspection->service_price;
-                            $html .= '
-                                <td>-</td> <!-- Replace with actual value -->
-                                <td>' . ($price == 0 ? '-' : $price) . '</td> <!-- Replace with actual remark if available -->';
-                        }
-                    } else {
-                        // If paytrue is 0 or null, do not perform calculation
-                        $html .= '
-                            <td>-</td> <!-- Replace with actual value for empty paytrue -->
-                            <td>-</td> <!-- Replace with actual remark if available -->';
-                    }
-                    $html .= '
-                        <td>' . ($inspection->remark ?? '-') . '</td>
-
-                    </tr>';
-                }
             }
         }
         $html .= '</tbody></table>';
@@ -1651,43 +1559,13 @@ class ReportController extends Controller
         $endDate   = Carbon::parse($request->input('end_date'))->endOfDay();
         $branchId  = $request->input('branch_id');
 
-        // ✅ ดึงพนักงานตามสาขา (ถ้ามี)
-        $employeeIds = collect();
-        if ($branchId) {
-            $employeeIds = Employees::where('branch_id', $branchId)->pluck('id');
-        }
+        $taxVehicle = ($request->has('tax_vehicle') && $request->input('tax_vehicle') !== null)
+            ? $request->input('tax_vehicle')
+            : null;
 
-        // ✅ Query ข้อมูล (เหมือนของเดิมที่ทำ PDF)
-        $query = Inspections::select(
-                'inspections.no',
-                'inspections.date',
-                'inspections.total',
-                'inspections.paytrue',
-                'inspections.tax_vehicle',
-                'inspections.remark',
-                'inspection_vehicles.license_plate',
-                'inspection_vehicles.provinces',
-                'inspection_vehicles.name AS customer_name',
-                'inspection_vehicles.phone_number',
-                'inspection_vehicles.registration_date',
-                'vehicleserviceTransactions.service_price',
-                'vehicle_brands.name'
-            )
-            ->leftJoin('inspection_vehicles', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
-            ->leftJoin('vechicle_services_transactions as vehicleserviceTransactions', 'inspection_vehicles.id', '=', 'vehicleserviceTransactions.inspection_vehicle_id')
-            ->leftJoin('vehicles', 'inspection_vehicles.vehicle_id', '=', 'vehicles.id')
-            ->leftJoin('vehicle_brands', 'vehicles.brand_id', '=', 'vehicle_brands.id')
-            ->when($employeeIds->isNotEmpty(), fn($q) => $q->whereIn('inspections.employee_id', $employeeIds))
-            ->where('vehicleserviceTransactions.service_id', 3)
-            ->when($request->has('tax_vehicle') && $request->input('tax_vehicle') !== null,
-                fn($q) => $q->where('inspections.tax_vehicle', $request->input('tax_vehicle'))
-            )
-            ->whereBetween('inspections.date', [$startDate, $endDate])
-            ->orderBy('inspections.date', 'asc');
-
-        // หมายเหตุ: ถ้า inspections ไม่มีความสัมพันธ์ employees จริง ๆ อย่าใช้ whereHas('employees')
-
-        $inspections = $query->get();
+        $inspections = $this->enrichCarTaxMainReportRows(
+            $this->buildCarTaxReportInspectionQuery($startDate, $endDate, $branchId, $taxVehicle)->get()
+        );
 
         // ✅ ส่งออก Excel (ใช้ Export class ด้านล่าง)
         $fileName = sprintf(
@@ -2928,13 +2806,11 @@ class ReportController extends Controller
             return $this->returnBadRequest($validator->errors(), 'ข้อมูลไม่ครบ');
         }
 
-        $branchId = trim($request->input('branch_id', null));
+        $branchId = $request->input('branch_id', null);
 
-        $query = Cost::select('date', 'name', 'price', 'detail')
-            ->when($branchId, function ($query) use ($branchId) {
-                $query->where('branch_id', $branchId);
-            })
-            ->when($startDate && $endDate, function ($query) use ($startDate, $endDate) {
+        $query = Cost::select('date', 'name', 'price', 'detail');
+        $this->applyCostBranchFilter($query, $branchId);
+        $query->when($startDate && $endDate, function ($query) use ($startDate, $endDate) {
                 $query->whereBetween('date', [$startDate, $endDate]);
             });
 
@@ -3311,24 +3187,26 @@ class ReportController extends Controller
     }
     public function downloadExcelDay(request $request)
     {
-        $branchId     = $request->input('branch_id', null);
-        $selectedDate = $request->input('date');
+        $branchId = $request->input('branch_id', null);
+        $startRaw = $request->input('start_date') ?: $request->input('date');
+        $endRaw   = $request->input('end_date') ?: $startRaw;
 
-        if (! $selectedDate) {
+        if (! $startRaw) {
             return $this->returnError('Date parameter is missing');
         }
 
-        $selectedDate = Carbon::parse($selectedDate)->toDateString();
+        $startDate = Carbon::parse($startRaw)->toDateString();
+        $endDate   = Carbon::parse($endRaw)->toDateString();
 
         $employeeIds = Employees::where('branch_id', $branchId)->pluck('id');
 
-        $query = Inspections::whereDate('inspections.date', $selectedDate);
+        $query = Inspections::whereBetween('inspections.date', [$startDate, $endDate]);
 
         if ($employeeIds->isNotEmpty()) {
             $query->whereIn('inspections.employee_id', $employeeIds);
         }
 
-        $items = $query->with(['installments'])->get()->toArray();
+        $items = $query->with(['Installments'])->get()->toArray();
 
         try {
             $result = new DayExport($items);
@@ -6466,6 +6344,84 @@ class ReportController extends Controller
 
         return $this->returnSuccess('เรียกดูข้อมูลสำเร็จ', $items);
     }
+    protected function extentCustomerNotificationsQuery(Carbon $today, Carbon $ninetyDay, ?string $searchValue = null, $branchId = null)
+    {
+        $todayStr     = $today->toDateTimeString();
+        $ninetyDayStr = $ninetyDay->toDateTimeString();
+
+        $customerNameSql = "TRIM(CONCAT(COALESCE(customers.name, ''), ' ', COALESCE(customers.lname, '')))";
+
+        $searchColumns = [
+            'vehicles.license_plate',
+            'customers.name',
+            'customers.lname',
+        ];
+
+        $query = Vehicles::select(
+            'vehicles.id',
+            'vehicles.license_plate',
+            'vehicles.call_log',
+            DB::raw("CASE WHEN vehicles.call_log BETWEEN '{$todayStr}' AND '{$ninetyDayStr}' THEN vehicles.call_log_details ELSE NULL END as call_log_details"),
+            DB::raw("{$customerNameSql} as customer_name"),
+            'customers.phone_number1 as phone_number',
+            'vehicles.notificate_tax',
+            DB::raw("(SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'prb') as prb_expiry_date"),
+            DB::raw("(SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'insurances') as insurance_expiry_date"),
+            DB::raw("CASE WHEN vehicles.notificate_tax BETWEEN '{$todayStr}' AND '{$ninetyDayStr}' THEN true ELSE false END as notificate_tax_status"),
+            DB::raw("CASE WHEN (SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'prb') BETWEEN '{$todayStr}' AND '{$ninetyDayStr}' THEN true ELSE false END as prb_expiry_date_status"),
+            DB::raw("CASE WHEN (SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'insurances') BETWEEN '{$todayStr}' AND '{$ninetyDayStr}' THEN true ELSE false END as insurance_expiry_date_status"),
+            DB::raw("CASE WHEN vehicles.call_log BETWEEN '{$todayStr}' AND '{$ninetyDayStr}' THEN true ELSE false END as call_log_status")
+        )
+            ->leftJoin('customers', 'vehicles.customer_id', '=', 'customers.id')
+            ->leftJoin('insurances_renewals', 'vehicles.id', '=', 'insurances_renewals.vehicle_id')
+            ->where(function ($query) use ($todayStr, $ninetyDayStr) {
+                $query->whereBetween('vehicles.notificate_tax', [$todayStr, $ninetyDayStr])
+                    ->orWhere(function ($q) use ($todayStr, $ninetyDayStr) {
+                        $q->where('insurances_renewals.type', 'prb')
+                            ->whereBetween('insurances_renewals.date_end', [$todayStr, $ninetyDayStr]);
+                    })
+                    ->orWhere(function ($q) use ($todayStr, $ninetyDayStr) {
+                        $q->where('insurances_renewals.type', 'insurances')
+                            ->whereBetween('insurances_renewals.date_end', [$todayStr, $ninetyDayStr]);
+                    });
+            })
+            ->havingRaw('notificate_tax_status = true OR prb_expiry_date_status = true OR insurance_expiry_date_status = true')
+            ->distinct();
+
+        if (! empty($searchValue)) {
+            $term = '%' . $searchValue . '%';
+            $query->where(function ($query) use ($searchColumns, $customerNameSql, $term) {
+                foreach ($searchColumns as $column) {
+                    $query->orWhere($column, 'like', $term);
+                }
+                $query->orWhereRaw("{$customerNameSql} LIKE ?", [$term]);
+            });
+        }
+
+        $branchId = trim((string) ($branchId ?? ''));
+        if ($branchId !== '') {
+            $query->where(function ($w) use ($branchId) {
+                $w->whereExists(function ($sub) use ($branchId) {
+                    $sub->select(DB::raw(1))
+                        ->from('inspection_vehicles')
+                        ->join('inspections', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
+                        ->whereColumn('inspection_vehicles.vehicle_id', 'vehicles.id')
+                        ->where('inspections.branch_id', $branchId)
+                        ->whereNull('inspection_vehicles.deleted_at')
+                        ->whereNull('inspections.deleted_at');
+                })->orWhereExists(function ($sub) use ($branchId) {
+                    $sub->select(DB::raw(1))
+                        ->from('inspections')
+                        ->whereColumn('inspections.vehicle_id', 'vehicles.id')
+                        ->where('inspections.branch_id', $branchId)
+                        ->whereNull('inspections.deleted_at');
+                });
+            });
+        }
+
+        return $query;
+    }
+
     public function Getpage_Extent_customer(Request $request) // notifications
     {
         $length = $request->length;
@@ -6485,11 +6441,6 @@ class ReportController extends Controller
             'insurance_expiry_date',
         ];
 
-        $searchColumns = [
-            'vehicles.license_plate',
-            'customers.name',
-        ];
-
         $today     = Carbon::now();
         $ninetyDay = $today->copy()->addDays(90);
         if ($request->input('start_date') && $request->input('end_date')) {
@@ -6497,51 +6448,123 @@ class ReportController extends Controller
             $ninetyDay = Carbon::parse($request->input('end_date'));
         }
 
-        $query = Vehicles::select(
-            'vehicles.id',
-            'vehicles.license_plate',
-            'vehicles.call_log',
-            DB::raw("CASE WHEN vehicles.call_log BETWEEN '$today' AND '$ninetyDay' THEN vehicles.call_log_details ELSE NULL END as call_log_details"),
-            DB::raw("CONCAT(customers.name, ' ', customers.lname) as customer_name"),
-            'customers.phone_number1 as phone_number',
-            'vehicles.notificate_tax',
-            DB::raw("(SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'prb') as prb_expiry_date"),
-            DB::raw("(SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'insurances') as insurance_expiry_date"),
-            DB::raw("CASE WHEN vehicles.notificate_tax BETWEEN '$today' AND '$ninetyDay' THEN true ELSE false END as notificate_tax_status"),
-            DB::raw("CASE WHEN (SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'prb') BETWEEN '$today' AND '$ninetyDay' THEN true ELSE false END as prb_expiry_date_status"),
-            DB::raw("CASE WHEN (SELECT MAX(date_end) FROM insurances_renewals WHERE insurances_renewals.vehicle_id = vehicles.id AND type = 'insurances') BETWEEN '$today' AND '$ninetyDay' THEN true ELSE false END as insurance_expiry_date_status"),
-            DB::raw("CASE WHEN vehicles.call_log BETWEEN '$today' AND '$ninetyDay' THEN true ELSE false END as call_log_status")
-        )
-            ->leftJoin('customers', 'vehicles.customer_id', '=', 'customers.id')
-            ->leftJoin('insurances_renewals', 'vehicles.id', '=', 'insurances_renewals.vehicle_id')
-            ->where(function ($query) use ($today, $ninetyDay) {
-                $query->whereBetween('vehicles.notificate_tax', [$today, $ninetyDay])
-                    ->orWhere(function ($q) use ($today, $ninetyDay) {
-                        $q->where('insurances_renewals.type', 'prb')
-                            ->whereBetween('insurances_renewals.date_end', [$today, $ninetyDay]);
-                    })
-                    ->orWhere(function ($q) use ($today, $ninetyDay) {
-                        $q->where('insurances_renewals.type', 'insurances')
-                            ->whereBetween('insurances_renewals.date_end', [$today, $ninetyDay]);
-                    });
-            })
-            ->havingRaw('notificate_tax_status = true OR prb_expiry_date_status = true OR insurance_expiry_date_status = true')
-            ->distinct();
+        $branchId = $request->input('branch_id', null);
+        $query = $this->extentCustomerNotificationsQuery($today, $ninetyDay, $search['value'] ?? null, $branchId);
 
         $orderBy = $columns[$order[0]['column']] ?? 'vehicles.id';
         $query->orderBy($orderBy, $order[0]['dir']);
 
-        if (! empty($search['value'])) {
-            $query->where(function ($query) use ($search, $searchColumns) {
-                foreach ($searchColumns as $column) {
-                    $query->orWhere($column, 'like', '%' . $search['value'] . '%');
-                }
-            });
-        }
-
         $items = $query->paginate($length, ['*'], 'page', $page);
 
         return $this->returnSuccess('เรียกดูข้อมูลสำเร็จ', $items);
+    }
+
+    public function downloadExcel_extent_customer(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date'   => 'required|date',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->returnBadRequest($validator->errors(), 'ข้อมูลไม่ครบ');
+        }
+
+        $today     = Carbon::parse($request->input('start_date'));
+        $ninetyDay = Carbon::parse($request->input('end_date'));
+
+        $branchId = $request->input('branch_id', null);
+        $rows = $this->extentCustomerNotificationsQuery($today, $ninetyDay, null, $branchId)
+            ->orderBy('vehicles.license_plate')
+            ->get();
+
+        try {
+            return Excel::download(new ExtentCustomerExport($rows), 'ติดตามลูกค้า.xlsx');
+        } catch (\Throwable $e) {
+            return $this->returnBadRequest($e->getMessage(), 'Error downloading file');
+        }
+    }
+
+    public function reportExportPDFextent_customer(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'start_date' => 'required|date',
+            'end_date'   => 'required|date',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->returnBadRequest($validator->errors(), 'ข้อมูลไม่ครบ');
+        }
+
+        $today     = Carbon::parse($request->input('start_date'));
+        $ninetyDay = Carbon::parse($request->input('end_date'));
+
+        $branchId = $request->input('branch_id', null);
+        $rows = $this->extentCustomerNotificationsQuery($today, $ninetyDay, null, $branchId)
+            ->orderBy('vehicles.license_plate')
+            ->get();
+
+        $defaultConfig     = (new \Mpdf\Config\ConfigVariables())->getDefaults();
+        $fontDirs          = $defaultConfig['fontDir'];
+        $defaultFontConfig = (new \Mpdf\Config\FontVariables())->getDefaults();
+        $fontData          = $defaultFontConfig['fontdata'];
+
+        $mpdf = new \Mpdf\Mpdf([
+            'mode'              => 'utf-8',
+            'format'            => 'A4-l',
+            'default_font_size' => 12,
+            'fontDir'           => array_merge($fontDirs, [
+                base_path() . '/custom/font/directory',
+            ]),
+            'fontdata'          => $fontData + [
+                'th-sarabun' => [
+                    'R'  => 'THSarabun.ttf',
+                    'I'  => 'THSarabun Italic.ttf',
+                    'B'  => 'THSarabun Bold.ttf',
+                    'BI' => 'THSarabun BoldItalic.ttf',
+                ],
+            ],
+            'default_font'      => 'th-sarabun',
+        ]);
+
+        $mpdf->SetTitle('ติดตามลูกค้า');
+        $mpdf->AddPage();
+
+        $rangeText = $today->copy()->addYears(543)->format('d/m/Y') . ' - ' . $ninetyDay->copy()->addYears(543)->format('d/m/Y');
+        $html      = '<h3 style="text-align:center;">รายงานติดตามลูกค้า (เตือนต่ออายุ)</h3>';
+        $html .= '<p style="text-align:center;">ช่วงวันที่ ' . $rangeText . '</p>';
+        $html .= '<table border="1" cellpadding="4" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:12px;">';
+        $html .= '<thead><tr>
+            <th>ทะเบียน</th><th>ชื่อลูกค้า</th><th>เบอร์โทร</th>
+            <th>วันหมดภาษี</th><th>วันหมด พ.ร.บ.</th><th>วันหมดประกัน</th><th>โทรล่าสุด</th>
+        </tr></thead><tbody>';
+
+        foreach ($rows as $row) {
+            $html .= '<tr>';
+            $html .= '<td>' . e($row->license_plate ?? '-') . '</td>';
+            $html .= '<td>' . e($row->customer_name ?? '-') . '</td>';
+            $html .= '<td>' . e($row->phone_number ?? '-') . '</td>';
+            $html .= '<td>' . e($row->notificate_tax ?? '-') . '</td>';
+            $html .= '<td>' . e($row->prb_expiry_date ?? '-') . '</td>';
+            $html .= '<td>' . e($row->insurance_expiry_date ?? '-') . '</td>';
+            $html .= '<td>' . e($row->call_log ?? '-') . '</td>';
+            $html .= '</tr>';
+        }
+
+        if ($rows->isEmpty()) {
+            $html .= '<tr><td colspan="7" style="text-align:center;">ไม่มีข้อมูล</td></tr>';
+        }
+
+        $html .= '</tbody></table>';
+
+        $mpdf->WriteHTML($html);
+        $pdfContent = $mpdf->Output('', 'S');
+        $headers    = [
+            'Content-Type'        => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="extent_customer.pdf"',
+        ];
+
+        return Response::make($pdfContent, 200, $headers);
     }
 
     public function GetpageCar_tax_(Request $request) // * okay
@@ -6656,11 +6679,12 @@ class ReportController extends Controller
             'inspections.result',
             'inspections.status',
             'inspections.commission',
+            'inspections.transaction_status',
             'inspection_vehicles.type_document',
             'vehicles.license_plate',
             'provinces.name_th_prefix',
             'provinces.name_th',
-            DB::raw("CONCAT(customers.name, ' ', customers.lname) as customer_name"),
+            DB::raw("TRIM(CONCAT(COALESCE(customers.name,''), ' ', COALESCE(customers.lname,''))) as customer_name"),
             'vehicles.id as vehicle_id',
             'vehicles.notificate_tax',
             'vehicles.registration_date',
@@ -6706,6 +6730,7 @@ class ReportController extends Controller
                 'inspections.result',
                 'inspections.status',
                 'inspections.commission',
+                'inspections.transaction_status',
                 'inspection_vehicles.type_document',
                 'vehicles.license_plate',
                 'provinces.name_th_prefix',
@@ -6742,6 +6767,8 @@ class ReportController extends Controller
         $items = $query
             ->orderBy($columns[$order[0]['column']], $order[0]['dir'])
             ->paginate($length, ['*'], 'page', $page);
+
+        $this->enrichCarTaxManagePageRows($items);
 
         return $this->returnSuccess('เรียกดูข้อมูลสำเร็จ', $items);
     }
@@ -7021,21 +7048,54 @@ class ReportController extends Controller
         //     $query->where('service_id', 16);
         //     $query->where('status', true);
         // });
+        // หนึ่งบิลหนึ่งแถว: join หลายตารางเดิมทำให้ซ้ำ (หลายคัน / หลาย vst ที่แก้บิล / หลาย address_ems)
         $query = Inspections::query()
             ->select($columns)
-        // ->join('vehicles', 'inspections.vehicle_id', '=', 'vehicles.id')
-            ->leftJoin('address_ems', 'inspections.id', '=', 'address_ems.inspection_id')
-        // ->leftJoin('vehicle_inspection_types', 'vehicles.vehicle_inspection_types_id', '=', 'vehicle_inspection_types.id')
+            ->leftJoin('address_ems', function ($join) {
+                $join->on('inspections.id', '=', 'address_ems.inspection_id')
+                    ->whereNull('address_ems.deleted_at')
+                    ->whereRaw('address_ems.id = (
+                        SELECT MAX(ae.id) FROM address_ems ae
+                        WHERE ae.inspection_id = inspections.id AND ae.deleted_at IS NULL
+                    )');
+            })
             ->leftJoin('customers', 'inspections.customer_id', '=', 'customers.id')
             ->leftJoin('provinces', 'address_ems.province_id', '=', 'provinces.id')
             ->leftJoin('districts', 'address_ems.district_id', '=', 'districts.id')
             ->leftJoin('sub_districts', 'address_ems.subdistrict_id', '=', 'sub_districts.id')
-            ->leftJoin('inspection_vehicles', 'inspections.id', '=', 'inspection_vehicles.inspection_id')
-            ->leftJoin('vechicle_services_transactions', 'inspection_vehicles.id', '=', 'vechicle_services_transactions.inspection_vehicle_id')
+            ->leftJoin('inspection_vehicles', function ($join) {
+                $join->on('inspections.id', '=', 'inspection_vehicles.inspection_id')
+                    ->whereRaw('inspection_vehicles.id = (
+                        SELECT iv.id FROM inspection_vehicles iv
+                        INNER JOIN vechicle_services_transactions vst ON iv.id = vst.inspection_vehicle_id
+                        WHERE iv.inspection_id = inspections.id
+                          AND vst.service_id = 16
+                          AND vst.deleted_at IS NULL
+                        ORDER BY iv.id ASC
+                        LIMIT 1
+                    )');
+            })
+            ->leftJoin('vechicle_services_transactions', function ($join) {
+                $join->on('inspection_vehicles.id', '=', 'vechicle_services_transactions.inspection_vehicle_id')
+                    ->where('vechicle_services_transactions.service_id', 16)
+                    ->whereNull('vechicle_services_transactions.deleted_at')
+                    ->whereRaw('vechicle_services_transactions.id = (
+                        SELECT MAX(vst.id) FROM vechicle_services_transactions vst
+                        WHERE vst.inspection_vehicle_id = inspection_vehicles.id
+                          AND vst.service_id = 16
+                          AND vst.deleted_at IS NULL
+                    )');
+            })
             ->where('inspections.status', '!=', 'cancel')
-            ->where('inspections.branch_id', $branchId)
             ->whereNull('inspections.deleted_at')
-            ->where('vechicle_services_transactions.service_id', 16);
+            ->whereExists(function ($sub) {
+                $sub->selectRaw('1')
+                    ->from('inspection_vehicles as iv')
+                    ->join('vechicle_services_transactions as vst', 'iv.id', '=', 'vst.inspection_vehicle_id')
+                    ->whereColumn('iv.inspection_id', 'inspections.id')
+                    ->where('vst.service_id', 16)
+                    ->whereNull('vst.deleted_at');
+            });
 
         if ($ems !== null) {
             if ($ems == 1) {
@@ -7049,9 +7109,10 @@ class ReportController extends Controller
             }
         }
 
-        // if ($branchId) {
-        //     $query->where('inspections.branch_id', $branchId);
-        // }
+        $branchId = trim((string) ($branchId ?? ''));
+        if ($branchId !== '') {
+            $query->where('inspections.branch_id', $branchId);
+        }
 
         if ($startDate && $endDate) {
             $query->whereBetween('inspections.date', [$startDate, $endDate]);
@@ -7242,6 +7303,11 @@ class ReportController extends Controller
             } elseif ($policy_number_filter == 1) {
                 $query->whereNotNull('insurances_renewals.policy_number');
             }
+        }
+
+        $insuranceName = $request->input('insurance_name');
+        if ($insuranceName !== null && $insuranceName !== '') {
+            $query->where('insurance_names.name', 'like', '%' . $insuranceName . '%');
         }
 
         if (! empty($search['value'])) {
@@ -8046,6 +8112,21 @@ class ReportController extends Controller
         return $this->returnSuccess('เรียกดูข้อมูลสำเร็จ', $items);
     }
 
+    protected function applyCostBranchFilter($query, $branchId)
+    {
+        $branchId = trim((string) ($branchId ?? ''));
+        if ($branchId === '') {
+            return $query;
+        }
+
+        return $query->where(function ($q) use ($branchId) {
+            $q->where('costs.branch_id', $branchId)
+                ->orWhereHas('Employees', function ($eq) use ($branchId) {
+                    $eq->where('branch_id', $branchId);
+                });
+        });
+    }
+
     public function GetpageExpense(Request $request)
     {
         $length = $request->length;
@@ -8067,11 +8148,9 @@ class ReportController extends Controller
         ];
 
         $query = Cost::select('id', 'date', 'name', 'price', 'type', 'detail', 'created_at', 'updated_at', 'expense_type_id', 'paid_type', 'employees_id')
-            ->with(['expenseType', 'Employees'])
-            ->when($branchId, function ($query) use ($branchId) {
-                $query->where('branch_id', $branchId);
-            })
-            ->when($status, function ($query) use ($status) {
+            ->with(['expenseType', 'Employees']);
+        $this->applyCostBranchFilter($query, $branchId);
+        $query->when($status, function ($query) use ($status) {
                 $query->where('type', $status);
             });
 
@@ -11692,8 +11771,8 @@ class ReportController extends Controller
             $inspections_debt->whereBetween('inspections.date', [$startDate, $endDate]);
         }
 
-        if (! empty($branch_id)) {
-            $inspections_debt->where('inspections.branch_id', $branch_id);
+        if (! empty($branchId)) {
+            $inspections_debt->where('inspections.branch_id', $branchId);
         }
         $inspections_debt = $inspections_debt->get();
 
@@ -12214,14 +12293,14 @@ class ReportController extends Controller
         //     ->where('status', 'success')
         //     ->get();
 
-        $fix = WorkOrder::with(['WorkOrderServices', 'Customer'])
+        $fix = WorkOrder::with(['WorkOrderServices', 'Customer', 'WorkOrderPayment'])
             ->when($branchId, function ($query) use ($branchId) {
                 $query->where('branches_id', $branchId);
             })
             ->when($startDate && $endDate, function ($query) use ($startDate, $endDate) {
-                $query->whereBetween('updated_at', [
-                    Carbon::parse($startDate)->startOfDay(),
-                    Carbon::parse($endDate)->endOfDay()
+                $query->whereBetween('date', [
+                    $startDate->toDateString(),
+                    $endDate->toDateString(),
                 ]);
             })
             ->where('status', 'success')
@@ -12252,8 +12331,8 @@ class ReportController extends Controller
             $inspections_debt->whereBetween('inspections.date', [$startDate, $endDate]);
         }
 
-        if (! empty($branch_id)) {
-            $inspections_debt->where('inspections.branch_id', $branch_id);
+        if (! empty($branchId)) {
+            $inspections_debt->where('inspections.branch_id', $branchId);
         }
         $inspections_debt = $inspections_debt->get();
 
@@ -12522,30 +12601,20 @@ class ReportController extends Controller
         $fixdata_cardit = [];
 
         foreach ($fix as $item) {
-            $reportRow = [
-                'pay_date6'     => $item->updated_at,
-                'date'          => $item->date,
-                'document_no'   => $item->no,
-                'document_type' => 'Fix',
-                'name'          => 'ใบซ่อม',
-                'license_plate' => $item->license_plate ?? '-',
-                'customer_name' => ($item->Customer->name ?? '-') . ' ' . ($item->Customer->lname ?? ''),
-                'type'          => 'รายรับ',
-                'category'      => 'ใบซ่อม',
-                'amount'        => $item->total,
-                'paid_type'     => $item->paid_type,
-                'branch_id'     => $item->branches_id,
-                'status'        => $item->status,
-                'reference_id'  => $item->id,
-            ];
-            $reportData[] = $reportRow;
-            $fixdata[]    = $reportRow;
-            if ($item->paid_type == 'paid_cash') {
-                $fixdata_cash[] = $reportRow;
-            } elseif ($item->paid_type == 'paid_tran') {
-                $fixdata_tran[] = $reportRow;
-            } elseif ($item->paid_type == 'credit') {
-                $fixdata_cardit[] = $reportRow;
+            $customerLabel = trim(
+                ($item->Customer->name ?? $item->customer_name ?? '') . ' ' . ($item->Customer->lname ?? '')
+            );
+            foreach ($this->buildDailyReportFixRows($item, $customerLabel, $branchId) as $reportRow) {
+                $reportData[] = $reportRow;
+                $fixdata[]    = $reportRow;
+                $paidType     = $reportRow['paid_type'];
+                if ($paidType === 'paid_cash') {
+                    $fixdata_cash[] = $reportRow;
+                } elseif ($paidType === 'paid_tran') {
+                    $fixdata_tran[] = $reportRow;
+                } elseif ($paidType === 'credit') {
+                    $fixdata_cardit[] = $reportRow;
+                }
             }
         }
 
@@ -13173,18 +13242,297 @@ class ReportController extends Controller
     }
 
 
+    /**
+     * รายงานภาษีรถ (PDF/Excel หลัก) — หนึ่งบิลหนึ่งแถว, บริการภาษี service_id = 3
+     */
+    private function buildCarTaxReportInspectionQuery(
+        Carbon $startDate,
+        Carbon $endDate,
+        $branchId,
+        ?string $taxVehicle = null
+    ) {
+        $taxServiceId = 3;
+
+        return Inspections::select(
+            'inspections.id',
+            'inspections.no',
+            'inspections.date',
+            'inspections.total',
+            'inspections.paytrue',
+            'inspections.tax_vehicle',
+            'inspections.remark',
+            'inspection_vehicles.license_plate',
+            'inspection_vehicles.provinces',
+            'inspection_vehicles.name AS customer_name',
+            'inspection_vehicles.phone_number',
+            DB::raw('COALESCE(inspection_vehicles.registration_date, vehicles.registration_date) as registration_date'),
+            'vehicles.tax_renewal_date',
+            'vehicleserviceTransactions.service_price',
+            'vehicle_brands.name as brand_name'
+        )
+            ->leftJoin('inspection_vehicles', function ($join) use ($taxServiceId) {
+                $join->on('inspections.id', '=', 'inspection_vehicles.inspection_id')
+                    ->whereRaw('inspection_vehicles.id = (
+                        SELECT iv.id FROM inspection_vehicles iv
+                        INNER JOIN vechicle_services_transactions vst ON iv.id = vst.inspection_vehicle_id
+                        WHERE iv.inspection_id = inspections.id
+                          AND vst.service_id = ?
+                          AND vst.deleted_at IS NULL
+                        ORDER BY iv.id ASC
+                        LIMIT 1
+                    )', [$taxServiceId]);
+            })
+            ->leftJoin('vechicle_services_transactions as vehicleserviceTransactions', function ($join) use ($taxServiceId) {
+                $join->on('inspection_vehicles.id', '=', 'vehicleserviceTransactions.inspection_vehicle_id')
+                    ->where('vehicleserviceTransactions.service_id', $taxServiceId)
+                    ->whereNull('vehicleserviceTransactions.deleted_at')
+                    ->whereRaw('vehicleserviceTransactions.id = (
+                        SELECT MAX(vst.id) FROM vechicle_services_transactions vst
+                        WHERE vst.inspection_vehicle_id = inspection_vehicles.id
+                          AND vst.service_id = ?
+                          AND vst.deleted_at IS NULL
+                    )', [$taxServiceId]);
+            })
+            ->leftJoin('vehicles', 'inspection_vehicles.vehicle_id', '=', 'vehicles.id')
+            ->leftJoin('vehicle_brands', 'vehicles.brand_id', '=', 'vehicle_brands.id')
+            ->whereNull('inspections.deleted_at')
+            ->where('inspections.status', '!=', 'cancel')
+            ->when($branchId, fn ($q) => $q->where('inspections.branch_id', $branchId))
+            ->when($taxVehicle !== null, fn ($q) => $q->where('inspections.tax_vehicle', $taxVehicle))
+            ->whereExists(function ($sub) use ($taxServiceId) {
+                $sub->selectRaw('1')
+                    ->from('inspection_vehicles as iv')
+                    ->join('vechicle_services_transactions as vst', 'iv.id', '=', 'vst.inspection_vehicle_id')
+                    ->whereColumn('iv.inspection_id', 'inspections.id')
+                    ->where('vst.service_id', $taxServiceId)
+                    ->whereNull('vst.deleted_at');
+            })
+            ->whereBetween('vehicles.tax_renewal_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->orderBy('vehicles.tax_renewal_date', 'asc')
+            ->orderBy('inspections.date', 'asc')
+            ->orderBy('inspections.id', 'asc');
+    }
+
+    /**
+     * คันหลักสำหรับรายงานภาษี — คันแรกที่มีบริการภาษี (service 3)
+     */
+    private function primaryCarTaxVehicle(Inspections $ins): ?InspectionVehicles
+    {
+        $ins->loadMissing(['InspectionVehicles.vehicleServiceTransaction']);
+
+        return $ins->InspectionVehicles->sortBy('id')->first(function ($iv) {
+            return $iv->vehicleServiceTransaction->contains(fn ($t) => (int) $t->service_id === 3);
+        }) ?? $ins->InspectionVehicles->sortBy('id')->first();
+    }
+
+    /** คอลัmn เพิ่m/คืn — ยอด 0 แสดง '-' เท่านั้น */
+    private function formatCarTaxDebtPayextraLabel(float $refund, float $extra): string
+    {
+        if ($extra > 0) {
+            return 'เพิ่ม ' . number_format($extra, 0) . ' บาท';
+        }
+        if ($refund > 0) {
+            return 'คืน ' . number_format($refund, 0) . ' บาท';
+        }
+
+        return '-';
+    }
+
+    /** คอลัmn หนี้ — ไม่มีส่วนต่างเงิn = ไม่แสดง badge (null → FE เป็น '-') */
+    private function carTaxDebtStatusForList(?string $transactionStatus, float $refund, float $extra): ?string
+    {
+        if ($transactionStatus === 'closedebt') {
+            return 'closedebt';
+        }
+        if ($extra <= 0 && $refund <= 0) {
+            return null;
+        }
+
+        return $transactionStatus;
+    }
+
+    /** หน้าจัดการภาษีรถ — ยอดเพิ่m/คืn ต่อแถว (batch โหลด inspection) */
+    private function enrichCarTaxManagePageRows($paginator): void
+    {
+        $collection = $paginator->getCollection();
+        if ($collection->isEmpty()) {
+            return;
+        }
+
+        $inspections = Inspections::query()
+            ->whereIn('id', $collection->pluck('id')->filter()->unique())
+            ->with(['InspectionVehicles.vehicleServiceTransaction'])
+            ->get()
+            ->keyBy('id');
+
+        $collection->transform(function ($row) use ($inspections) {
+            $ins = $inspections->get($row->id);
+            if (! $ins) {
+                $row->payextra = '-';
+
+                return $row;
+            }
+
+            $amounts = $this->carTaxServiceAmounts($ins);
+            $row->transaction_status = $this->carTaxDebtStatusForList(
+                $ins->transaction_status,
+                $amounts['refund'],
+                $amounts['extra']
+            );
+            $row->payextra = $this->formatCarTaxDebtPayextraLabel(
+                $amounts['refund'],
+                $amounts['extra']
+            );
+
+            return $row;
+        });
+    }
+
+    /**
+     * ยอดเรียกเก็บ/คืน/เพิ่mเงิn — ใช้แถวบริการล่าสุดต่อคัน (Eloquent กรอง soft-delete แล้ว)
+     */
+    private function carTaxServiceAmounts(Inspections $ins): array
+    {
+        $iv = $this->primaryCarTaxVehicle($ins);
+        $tax   = 0.0;
+        $taxUp = 0.0;
+
+        if ($iv) {
+            $txns  = $iv->vehicleServiceTransaction->sortByDesc('id');
+            $tax   = (float) ($txns->first(fn ($t) => (int) $t->service_id === 3)?->service_price ?? 0);
+            $taxUp = (float) ($txns->first(fn ($t) => (int) $t->service_id === 4)?->service_price ?? 0);
+        }
+
+        $billed = $tax + $taxUp;
+        $refund = 0.0;
+        $extra  = 0.0;
+        $pay    = null;
+
+        if ($ins->paytrue !== null && $ins->paytrue !== '') {
+            $pay = (float) $ins->paytrue;
+            if ($billed > $pay) {
+                $refund = $billed - $pay;
+            } elseif ($pay > $billed) {
+                $extra = $pay - $billed;
+            }
+        }
+
+        return [
+            'vehicle' => $iv,
+            'tax'     => $tax,
+            'tax_up'  => $taxUp,
+            'billed'  => $billed,
+            'pay'     => $pay,
+            'refund'  => $refund,
+            'extra'   => $extra,
+        ];
+    }
+
+
+    private function enrichCarTaxMainReportRows($rows)
+    {
+        $rows = collect($rows);
+        if ($rows->isEmpty()) {
+            return $rows;
+        }
+
+        $ids = $rows->pluck('id')->filter()->unique()->values();
+        $inspections = Inspections::query()
+            ->whereIn('id', $ids)
+            ->with(['InspectionVehicles.vehicleServiceTransaction'])
+            ->get()
+            ->keyBy('id');
+
+        return $rows->map(function ($row) use ($inspections) {
+            $ins = $inspections->get($row->id);
+            if ($ins) {
+                $amounts      = $this->carTaxServiceAmounts($ins);
+                $row->billed  = $amounts['billed'];
+                $row->refund  = $amounts['refund'];
+                $row->extra   = $amounts['extra'];
+                $row->paytrue = $amounts['pay'];
+            } else {
+                $row->billed = (float) ($row->service_price ?? 0);
+                $row->refund = 0.0;
+                $row->extra  = 0.0;
+            }
+
+            return $row;
+        });
+    }
+
+    private function formatCarTaxReportCell($value, bool $money = false): string
+    {
+        if ($value === null || $value === '') {
+            return '-';
+        }
+        if ($money) {
+            $f = (float) $value;
+
+            return $f == 0.0 ? '-' : number_format($f, 0, '.', ',');
+        }
+
+        return e((string) $value);
+    }
+
+    /** ทะเบียนเดิมไม่ซ้ำข้ามบิล/ปี — เก็บบิลล่าสุดต่อทะเบียนในชุด export */
+    private function dedupeCarTaxExportsByLicensePlate($collection)
+    {
+        $seen = [];
+        $out  = collect();
+
+        foreach ($collection->sortByDesc('id')->values() as $ins) {
+            $plate = strtoupper(trim((string) ($this->primaryCarTaxVehicle($ins)?->license_plate ?? '')));
+            $key   = $plate !== '' ? $plate : 'id:' . $ins->id;
+            if (! isset($seen[$key])) {
+                $seen[$key] = true;
+                $out->push($ins);
+            }
+        }
+
+        return $out->values();
+    }
+
+    private function prepareCarTaxStatusExportPayload($inspections): array
+    {
+        return $inspections->map(function (Inspections $ins) {
+            $amounts = $this->carTaxServiceAmounts($ins);
+            $arr     = $ins->toArray();
+            $primary = $amounts['vehicle'];
+
+            if ($primary) {
+                $ivArr = $primary->toArray();
+                $ivArr['vehicle_service_transaction'] = $primary->vehicleServiceTransaction
+                    ->sortByDesc('id')
+                    ->values()
+                    ->toArray();
+                $arr['inspection_vehicles'] = [$ivArr];
+            }
+
+            $arr['_tax']         = $amounts['tax'];
+            $arr['_tax_up']      = $amounts['tax_up'];
+            $arr['_tax_billed']  = $amounts['billed'];
+            $arr['_pay_refund']  = $amounts['refund'];
+            $arr['_pay_extra']   = $amounts['extra'];
+
+            return $arr;
+        })->values()->all();
+    }
+
     public function exportExcel_tax_by_status(Request $request)
     {
         $tax_vehicle = $request->tax_vehicle;
         $branchId    = $request->input('branch_id', null);
         $start_date  = $request->input('start_date', null);
         $end_date    = $request->input('end_date', null);
-        $no          = $request->input('no', null); // เพิ่ม filter เฉพาะ no
+        $no          = $request->input('no', null);
 
-        // Important: get "latest per no" first, then filter tax_vehicle.
-        // If we filter tax_vehicle first, old rows can leak into export.
-        $inspections = Inspections::when($branchId, fn($q) => $q->where('branch_id', $branchId))
-            ->when($no, fn($q) => $q->where('no', $no)) // filter เฉพาะ no ถ้ามี
+        $inspections = Inspections::query()
+            ->when($branchId, fn ($q) => $q->where('branch_id', $branchId))
+            ->when($no, fn ($q) => $q->where('no', $no))
+            ->whereNull('deleted_at')
+            ->where('status', '!=', 'cancel')
+            ->whereHas('InspectionVehicles.vehicleServiceTransaction', fn ($q) => $q->where('service_id', 3))
             ->when($start_date && $end_date, function ($q) use ($start_date, $end_date) {
                 $q->whereHas('InspectionVehicles.vehicle', function ($v) use ($start_date, $end_date) {
                     $v->whereBetween('tax_renewal_date', [$start_date, $end_date]);
@@ -13199,41 +13547,104 @@ class ReportController extends Controller
 
         $latestPerNo = $inspections
             ->groupBy(function ($ins) {
-                $no = strtoupper(trim((string) ($ins->no ?? '')));
-                return $no !== '' ? 'no:' . $no : 'id:' . $ins->id;
+                $billNo = strtoupper(trim((string) ($ins->no ?? '')));
+
+                return $billNo !== '' ? 'no:' . $billNo : 'id:' . $ins->id;
             })
-            ->map(function ($group) {
-                return $group->sortByDesc('id')->first();
-            })
+            ->map(fn ($group) => $group->sortByDesc('id')->first())
             ->values();
 
         $filteredLatest = $latestPerNo;
-        if ($tax_vehicle === 'send') {
-            $filteredLatest = $latestPerNo->filter(function ($ins) {
-                return strtolower(trim((string) ($ins->tax_vehicle ?? ''))) === 'send';
-            })->values();
-        } elseif (in_array($tax_vehicle, ['complete', 'success'], true)) {
-            $filteredLatest = $latestPerNo->filter(function ($ins) {
-                return in_array(
-                    strtolower(trim((string) ($ins->tax_vehicle ?? ''))),
-                    ['complete', 'success'],
-                    true
-                );
-            })->values();
+        $status         = strtolower(trim((string) $tax_vehicle));
+
+        if (in_array($status, ['check', 'wait', 'send', 'complete', 'success'], true)) {
+            $filteredLatest = $latestPerNo->filter(
+                fn ($ins) => strtolower(trim((string) ($ins->tax_vehicle ?? ''))) === $status
+            )->values();
         }
 
+        $filteredLatest = $this->dedupeCarTaxExportsByLicensePlate($filteredLatest);
+        $exportData     = $this->prepareCarTaxStatusExportPayload($filteredLatest);
+
         $excel_name = 'รายงานภาษีรถ.xlsx';
-        if ($tax_vehicle === 'send') {
+        if ($status === 'send') {
             $excel_name = 'รายงานภาษีรถ_รายการนำส่ง.xlsx';
-        } elseif (in_array($tax_vehicle, ['complete', 'success'], true)) {
-            $excel_name = 'รายงานภาษีรถ_รอรับป้ายและสำเร็จ.xlsx';
+        } elseif ($status === 'complete') {
+            $excel_name = 'รายงานภาษีรถ_รอรับป้าย.xlsx';
+        } elseif ($status === 'success') {
+            $excel_name = 'รายงานภาษีรถ_สำเร็จ.xlsx';
         }
 
         $sd_th = $start_date ? Carbon::parse($start_date)->format('d/m/') . (Carbon::parse($start_date)->year + 543) : null;
         $ed_th = $end_date ? Carbon::parse($end_date)->format('d/m/') . (Carbon::parse($end_date)->year + 543) : null;
 
-        $result = new ReportCarTaxVehicleExport($filteredLatest->toArray(), $tax_vehicle, $sd_th, $ed_th);
+        $result = new ReportCarTaxVehicleExport($exportData, $tax_vehicle, $sd_th, $ed_th);
+
         return Excel::download($result, $excel_name);
+    }
+
+    private function normalizeDailyReportPaidType(?string $paidType): ?string
+    {
+        if ($paidType === null || $paidType === '') {
+            return null;
+        }
+
+        return $paidType === 'paid_credit' ? 'credit' : $paidType;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function buildDailyReportFixRows(WorkOrder $item, string $customerLabel, $branchId): array
+    {
+        $base = [
+            'date'          => $item->date,
+            'document_no'   => $item->no,
+            'document_type' => 'Fix',
+            'name'          => 'ใบซ่อม',
+            'license_plate' => $item->license_plate ?? '-',
+            'customer_name' => $customerLabel !== '' ? $customerLabel : '-',
+            'type'          => 'รายรับ',
+            'category'      => 'ใบซ่อม',
+            'branch_id'     => $item->branches_id ?? $branchId,
+            'status'        => $item->status,
+            'reference_id'  => $item->id,
+        ];
+
+        $rows     = [];
+        $payments = $item->WorkOrderPayment ?? collect();
+
+        if ($payments->isNotEmpty()) {
+            $summary = [];
+            foreach ($payments as $payment) {
+                $paidType = $this->normalizeDailyReportPaidType($payment->paid_type) ?? 'paid_cash';
+                $summary[$paidType] = ($summary[$paidType] ?? 0) + (float) $payment->paid_price;
+            }
+            foreach ($summary as $paidType => $amount) {
+                if ((float) $amount === 0.0) {
+                    continue;
+                }
+                $rows[] = array_merge($base, [
+                    'pay_date6' => $item->date,
+                    'amount'    => $amount,
+                    'paid_type' => $paidType,
+                ]);
+            }
+
+            return $rows;
+        }
+
+        $paidType = $this->normalizeDailyReportPaidType($item->paid_type) ?? 'paid_cash';
+        $amount   = (float) ($item->total_amount ?? $item->total ?? 0);
+        if ($amount !== 0.0) {
+            $rows[] = array_merge($base, [
+                'pay_date6' => $item->date,
+                'amount'    => $amount,
+                'paid_type' => $paidType,
+            ]);
+        }
+
+        return $rows;
     }
 }
 

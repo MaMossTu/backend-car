@@ -19,47 +19,53 @@
         $totalTransfer = 0;
         $totalDebt = 0;
         $totalCredit = 0;
-        $lastNo = null;
     @endphp
 
     @foreach ($data as $dataloop)
-        @if ($dataloop['status'] == 'finish')
-            @foreach ($dataloop['installments'] as $installment)
-                @php
-                    $cash = ($installment['paid_type'] == 'paid_cash') ? $installment['paid_price'] : 0;
-                    $transfer = ($installment['paid_type'] == 'paid_tran') ? $installment['paid_price'] : 0;
-                    $credit = ($installment['paid_type'] == 'credit') ? $installment['paid_price'] : 0;
-                    $debt = $installment['after_price'] ?? 0;
+        @if (in_array($dataloop['status'] ?? '', ['finish', 'overdue'], true))
+            @php
+                $cash = 0;
+                $transfer = 0;
+                $credit = 0;
+                $debt = 0;
+                $installments = $dataloop['installments'] ?? [];
+                $installmentCount = count($installments);
+                foreach ($installments as $index => $installment) {
+                    if (($installment['paid_type'] ?? '') === 'paid_cash') {
+                        $cash += (float) ($installment['paid_price'] ?? 0);
+                    } elseif (($installment['paid_type'] ?? '') === 'paid_tran') {
+                        $transfer += (float) ($installment['paid_price'] ?? 0);
+                    } elseif (($installment['paid_type'] ?? '') === 'credit') {
+                        $credit += (float) ($installment['paid_price'] ?? 0);
+                    }
+                    if ($index === $installmentCount - 1) {
+                        $debt = (float) ($installment['after_price'] ?? 0);
+                    }
+                }
+                $totalCash += $cash;
+                $totalTransfer += $transfer;
+                $totalDebt += $debt;
+                $totalCredit += $credit;
+            @endphp
 
-                    $totalCash += $cash;
-                    $totalTransfer += $transfer;
-                    $totalDebt += $debt;
-                    $totalCredit += $credit;
-                @endphp
-
-                <tr>
-                    <td style="border: 1px solid black;">{{ $lastNo !== $dataloop['no'] ? $dataloop['date'] : '' }}</td>
-                    <td style="border: 1px solid black;">{{ $lastNo !== $dataloop['no'] ? $dataloop['no'] : '' }}</td>
-                    <td style="border: 1px solid black;">{{ $cash }}</td>
-                    <td style="border: 1px solid black;">{{ $transfer }}</td>
-                    <td style="border: 1px solid black;">{{ $credit }}</td>
-                    <td style="border: 1px solid black;">{{ $debt }}</td>
-                    <td style="border: 1px solid black;"></td>
-                </tr>
-
-                @php
-                    $lastNo = $dataloop['no'];
-                @endphp
-            @endforeach
+            <tr>
+                <td style="border: 1px solid black;">{{ $dataloop['date'] ?? '' }}</td>
+                <td style="border: 1px solid black;">{{ $dataloop['no'] ?? '' }}</td>
+                <td style="border: 1px solid black; text-align: right;">{{ number_format($cash, 2) }}</td>
+                <td style="border: 1px solid black; text-align: right;">{{ number_format($transfer, 2) }}</td>
+                <td style="border: 1px solid black; text-align: right;">{{ number_format($credit, 2) }}</td>
+                <td style="border: 1px solid black; text-align: right;">{{ number_format($debt, 2) }}</td>
+                <td style="border: 1px solid black;">{{ $dataloop['remark'] ?? '' }}</td>
+            </tr>
         @endif
     @endforeach
 
     <tr>
         <td colspan="2" style="border: 1px solid black;"><strong>รวม</strong></td>
-        <td style="border: 1px solid black;">{{ $totalCash }}</td>
-        <td style="border: 1px solid black;">{{ $totalTransfer }}</td>
-        <td style="border: 1px solid black;">{{ $totalCredit }}</td>
-        <td style="border: 1px solid black;">{{ $totalDebt }}</td>
+        <td style="border: 1px solid black; text-align: right;">{{ number_format($totalCash, 2) }}</td>
+        <td style="border: 1px solid black; text-align: right;">{{ number_format($totalTransfer, 2) }}</td>
+        <td style="border: 1px solid black; text-align: right;">{{ number_format($totalCredit, 2) }}</td>
+        <td style="border: 1px solid black; text-align: right;">{{ number_format($totalDebt, 2) }}</td>
         <td style="border: 1px solid black;"></td>
     </tr>
 </table>

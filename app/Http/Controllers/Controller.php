@@ -78,21 +78,44 @@ abstract class Controller
     {
         if ($request->hasFile($name)) {
             $file = $request->file($name);
-            $filename = 'branchs_logo_' . $picname . '.' . $file->getClientOriginalExtension();
-            $path = '/Branches/';
+            $ext = $file->getClientOriginalExtension() ?: 'png';
+            $filename = 'branchs_logo_' . $picname . '_' . time() . '.' . $ext;
+            $path = 'Branches';
             Storage::disk('public')->putFileAs($path, $file, $filename);
-            return 'storage' . $path . $filename;
+
+            return 'storage/Branches/' . $filename;
         }
     }
     public function saveImageunder_branchs(Request $request, $name, $picname)
     {
         if ($request->hasFile($name)) {
             $file = $request->file($name);
-            $filename = 'branchs_under_' . $picname . '.' . $file->getClientOriginalExtension();
-            $path = '/Branches/';
+            $ext = $file->getClientOriginalExtension() ?: 'png';
+            $filename = 'branchs_under_' . $picname . '_' . time() . '.' . $ext;
+            $path = 'Branches';
             Storage::disk('public')->putFileAs($path, $file, $filename);
-            return 'storage' . $path . $filename;
+
+            return 'storage/Branches/' . $filename;
         }
+    }
+
+    /** Path ใน DB (storage/Branches/...) → local path สำหรับ mPDF หรือ URL เต็ม */
+    protected function branchStoredLogoUrl(?string $path): ?string
+    {
+        if ($path === null || $path === '') {
+            return null;
+        }
+        if (preg_match('#^https?://#i', $path)) {
+            return $path;
+        }
+
+        $relative = ltrim(preg_replace('#^storage/#', '', ltrim($path, '/')), '/');
+        $absolute = storage_path('app/public/' . $relative);
+        if (is_file($absolute)) {
+            return $absolute;
+        }
+
+        return asset(ltrim($path, '/'));
     }
 
     public function save_Document($file, $picname, $no)
